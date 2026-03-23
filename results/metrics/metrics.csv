@@ -1,0 +1,2 @@
+method,budget,seed,best_epoch,best_test_accuracy,final_test_accuracy,final_test_loss,num_selected
+tpcrp,10,21,50,0.1361,0.1361,14.686723138427734,10

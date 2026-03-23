@@ -1,0 +1,10 @@
+*.pt
+.env
+/.venv/
+__pycache__/
+.pytest_cache/
+venv/
+.vscode/
+results/embeddings/
+results/selections/
+data/

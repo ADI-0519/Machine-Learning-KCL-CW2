@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "machine-learning-kcl-cw2"
+version = "0.1.0"
+description = "Coursework project for SimCLR and experiment pipelines"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "torch",
+  "torchvision",
+  "numpy",
+  "scikit-learn",
+  "scipy",
+  "pandas",
+  "matplotlib",
+  "pyyaml",
+  "tqdm",
+]
+
+[project.scripts]
+train-simclr = "scripts.train_simclr:main"
+run-experiments = "scripts.run_experiments:main"
+
+[tool.setuptools.packages.find]
+include = ["src*", "scripts*"]

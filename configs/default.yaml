@@ -1,0 +1,34 @@
+seed: 21
+
+data:
+  name: "cifar10"
+  root: "./data"
+  num_workers: 2
+
+simclr:
+  batch_size: 256
+  epochs: 100
+  lr: 0.001
+  weight_decay: 0.0001
+  temperature: 0.5
+  projection_dim: 128
+  embedding_dim: 512
+  save_path: "./results/checkpoints/simclr_resnet18.pt"
+
+selection:
+  knn_k: 20
+  budgets: [10, 20, 50]
+  clustering: "kmeans"
+  modified_alpha: 0.7
+
+classifier:
+  backbone: "resnet18"
+  batch_size: 64
+  epochs: 50
+  lr: 0.025
+  momentum: 0.9
+  weight_decay: 0.0005
+
+experiment:
+  methods: ["random", "tpcrand", "tpcrp", "tpcrp_modified"]
+  seeds: [42, 43, 44]

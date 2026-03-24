@@ -33,6 +33,7 @@ class NTXentLoss(nn.Module):
 def train_simclr_epoch(model, loader, optimizer, criterion, device):
     model.train()
     total_loss = 0.0
+    total_examples = 0
 
     for (x1, x2), itm in tqdm(loader, leave=False):
         x1, x2 = x1.to(device), x2.to(device)

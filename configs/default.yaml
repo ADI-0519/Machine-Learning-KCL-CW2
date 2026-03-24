@@ -17,7 +17,7 @@ simclr:
 
 selection:
   knn_k: 20
-  budgets: [10, 20, 50]
+  budgets: [10, 20, 30, 50, 100]
   clustering: "kmeans"
   modified_alpha: 0.7
 
@@ -30,5 +30,5 @@ classifier:
   weight_decay: 0.0005
 
 experiment:
-  methods: ["random", "tpcrand", "tpcrp", "tpcrp_modified"]
+  methods: ["random", "tpcrand", "tpcrp"]
   seeds: [42, 43, 44]

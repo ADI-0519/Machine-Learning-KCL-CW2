@@ -368,6 +368,29 @@ def _predict_probs_linear_head(
 
 
 @torch.no_grad()
+def _predict_mc_probs_linear_head(
+    model: nn.Module,
+    embeddings: np.ndarray,
+    device: torch.device,
+    mc_passes: int = 10,
+) -> np.ndarray:
+    """
+    MC-dropout predictions for ssl_embedding.
+    Returns shape (T, N, C).
+    """
+    prev_mode = model.training
+    model.train()  # keep dropout active at inference for MC sampling
+    x = torch.from_numpy(embeddings.astype(np.float32)).to(device, non_blocking=True)
+    all_mc: list[np.ndarray] = []
+    for _ in range(max(1, mc_passes)):
+        logits = model(x)
+        probs = torch.softmax(logits, dim=1).cpu().numpy()
+        all_mc.append(probs)
+    model.train(prev_mode)
+    return np.stack(all_mc, axis=0)
+
+
+@torch.no_grad()
 def _predict_probs_torch_model(
     model: torch.nn.Module,
     dataset,
@@ -503,6 +526,37 @@ def _select_bald_from_mc(mc_probs: np.ndarray, query_size: int) -> np.ndarray:
     return np.argsort(mi)[-query_size:]
 
 
+def _predict_mc_probs_label_spreading(
+    model: LabelSpreading,
+    embeddings: np.ndarray,
+    mc_passes: int = 10,
+    dropout_p: float = 0.2,
+) -> np.ndarray:
+    """
+    Lightweight stochastic predictions for semi_supervised selection.
+    We apply feature dropout to embeddings at inference and query predict_proba.
+    Returns shape (T, N, C).
+    """
+    p = float(np.clip(dropout_p, 0.0, 0.95))
+    all_mc: list[np.ndarray] = []
+    for _ in range(max(1, int(mc_passes))):
+        if p > 0.0:
+            mask = (np.random.rand(*embeddings.shape) >= p).astype(np.float32)
+            noisy = embeddings.astype(np.float32) * mask / (1.0 - p)
+        else:
+            noisy = embeddings.astype(np.float32)
+        probs = model.predict_proba(noisy)
+        probs = np.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
+        row_sums = probs.sum(axis=1, keepdims=True)
+        zero_rows = (row_sums <= 1e-12).reshape(-1)
+        if np.any(zero_rows):
+            probs[zero_rows] = 1.0 / probs.shape[1]
+            row_sums = probs.sum(axis=1, keepdims=True)
+        probs = probs / np.clip(row_sums, 1e-12, None)
+        all_mc.append(probs)
+    return np.stack(all_mc, axis=0)
+
+
 def _round_query_sizes(total_budget: int, rounds: int) -> list[int]:
     base = total_budget // rounds
     rem = total_budget % rounds
@@ -576,7 +630,11 @@ def _train_eval_ssl_embedding(
     x_test = torch.from_numpy(test_embeddings.astype(np.float32))
     y_test = torch.from_numpy(test_labels.astype(np.int64))
 
-    linear = nn.Linear(train_embeddings.shape[1], 10).to(device)
+    linear_dropout_p = float(classifier_cfg.get("ssl_embedding_dropout_p", 0.2))
+    linear = nn.Sequential(
+        nn.Dropout(p=linear_dropout_p),
+        nn.Linear(train_embeddings.shape[1], 10),
+    ).to(device)
     criterion = nn.CrossEntropyLoss()
 
     # Paper-style linear eval uses a much higher LR than end-to-end supervised training.
@@ -827,29 +885,43 @@ def run_single_experiment(
             elif framework == "ssl_embedding":
                 if method == "badge":
                     local_selected = kcenter_selector(train_embeddings[pool_indices], query_size)
+                elif method in {"dbal", "bald"}:
+                    mc_probs = _predict_mc_probs_linear_head(
+                        model=model_state,
+                        embeddings=train_embeddings[pool_indices],
+                        device=device,
+                        mc_passes=int(experiment_cfg.get("mc_passes", 10)),
+                    )
+                    if method == "dbal":
+                        probs_pool = mc_probs.mean(axis=0)
+                        local_selected = _select_from_probabilities("entropy", probs_pool, query_size)
+                    else:
+                        local_selected = _select_bald_from_mc(mc_probs, query_size)
                 else:
                     probs_pool = _predict_probs_linear_head(
                         model=model_state,
                         embeddings=train_embeddings[pool_indices],
                         device=device,
                     )
-                    if method == "bald":
-                        local_selected = _select_from_probabilities("entropy", probs_pool, query_size)
-                    elif method == "dbal":
-                        local_selected = _select_from_probabilities("entropy", probs_pool, query_size)
-                    else:
-                        local_selected = _select_from_probabilities(method=method, probs=probs_pool, query_size=query_size)
+                    local_selected = _select_from_probabilities(method=method, probs=probs_pool, query_size=query_size)
             elif framework == "semi_supervised":
                 if method == "badge":
                     local_selected = kcenter_selector(train_embeddings[pool_indices], query_size)
-                else:
-                    probs_pool = model_state.label_distributions_[pool_indices]
-                    if method == "bald":
-                        local_selected = _select_from_probabilities("entropy", probs_pool, query_size)
-                    elif method == "dbal":
+                elif method in {"dbal", "bald"}:
+                    mc_probs = _predict_mc_probs_label_spreading(
+                        model=model_state,
+                        embeddings=train_embeddings[pool_indices],
+                        mc_passes=int(experiment_cfg.get("mc_passes", 10)),
+                        dropout_p=float(experiment_cfg.get("semi_mc_dropout_p", experiment_cfg.get("mc_dropout_p", 0.2))),
+                    )
+                    if method == "dbal":
+                        probs_pool = mc_probs.mean(axis=0)
                         local_selected = _select_from_probabilities("entropy", probs_pool, query_size)
                     else:
-                        local_selected = _select_from_probabilities(method=method, probs=probs_pool, query_size=query_size)
+                        local_selected = _select_bald_from_mc(mc_probs, query_size)
+                else:
+                    probs_pool = model_state.label_distributions_[pool_indices]
+                    local_selected = _select_from_probabilities(method=method, probs=probs_pool, query_size=query_size)
             else:
                 raise ValueError(f"Unknown framework: {framework}")
         elif method in {"uncertainty", "margin", "entropy", "dbal", "bald", "badge"}:

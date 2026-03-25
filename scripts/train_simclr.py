@@ -25,14 +25,7 @@ def main() -> None:
         root=data_cfg["root"],
         transform=SimCLRTransform(),
     )
-    loader = DataLoader(
-        dataset,
-        batch_size=simclr_cfg["batch_size"],
-        shuffle=True,
-        num_workers=data_cfg["num_workers"],
-        pin_memory=True,
-        drop_last=True,
-    )
+    loader = DataLoader(dataset,batch_size=simclr_cfg["batch_size"],shuffle=True,num_workers=data_cfg["num_workers"],pin_memory=True,drop_last=True)
 
     model = SimCLRModel(proj_dim=simclr_cfg["projection_dim"]).to(device)
     criterion = NTXentLoss(temperature=simclr_cfg["temperature"])

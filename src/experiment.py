@@ -557,13 +557,14 @@ def _train_eval_ssl_embedding(
 ) -> dict[str, Any]:
     clf = LogisticRegression(
         max_iter=1000,
-        multi_class="multinomial",
         solver="lbfgs",
         random_state=seed,
         n_jobs=None,
     )
     clf.fit(train_embeddings[selected_indices], train_labels[selected_indices])
-    probs_test = clf.predict_proba(test_embeddings)
+    probs_test_partial = clf.predict_proba(test_embeddings)
+    probs_test = np.zeros((len(test_embeddings), 10), dtype=np.float64)
+    probs_test[:, clf.classes_.astype(int)] = probs_test_partial
     preds_test = probs_test.argmax(axis=1)
     acc = accuracy_score(test_labels, preds_test)
     loss = log_loss(test_labels, probs_test, labels=np.arange(10))

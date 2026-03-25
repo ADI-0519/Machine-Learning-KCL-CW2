@@ -15,11 +15,8 @@ def main():
 
     try:
         df = pd.read_csv(metrics_path)
-    except EmptyDataError as exc:
-        raise ValueError(
-            f"Metrics file exists but is empty: {metrics_path}. "
-            "Run experiments first to generate rows."
-        ) from exc
+    except EmptyDataError as e:
+        raise ValueError(f"Metrics file exists but is empty: {metrics_path}. ""Run experiments first to generate rows.") from e
 
     required_cols = {"method", "budget", "seed", "best_test_accuracy"}
     missing = required_cols - set(df.columns)

@@ -50,11 +50,8 @@ def main() -> None:
 
     try:
         df = pd.read_csv(metrics_path)
-    except EmptyDataError as exc:
-        raise ValueError(
-            f"Metrics file exists but is empty: {metrics_path}. "
-            "Run experiments first to generate rows."
-        ) from exc
+    except EmptyDataError as e:
+        raise ValueError(f"Metrics file exists but is empty: {metrics_path}. ""Run experiments first to generate rows.") from e
     dedup_keys = ["method", "budget", "seed"]
     if "framework" in df.columns:
         dedup_keys = ["framework"] + dedup_keys

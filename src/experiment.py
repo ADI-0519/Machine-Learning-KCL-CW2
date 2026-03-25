@@ -5,6 +5,10 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.nn.functional as F
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, log_loss
+from sklearn.semi_supervised import LabelSpreading
 from torch.utils.data import DataLoader
 
 from .clustering import cluster_embeddings
@@ -21,14 +25,15 @@ from .evaluate import summarise_labels
 from .models import SimCLRModel
 from .seed import set_seed
 from .selectors import (
+    kcenter_selector,
     random_selector,
+    tpcinv_selector,
+    tpcnoclust_selector,
     tpcrand_selector,
     tpcrp_modified_selector,
     tpcrp_selector,
-    tpcinv_selector,
-    tpcnoclust_selector,
-    kcenter_selector
 )
+from .typicality import compute_cluster_aware_scores, compute_typicality_scores
 from .train_classifier import train_classifier
 
 
@@ -47,29 +52,30 @@ def load_simclr_encoder(
     projection_dim: int,
     device: torch.device,
 ):
-    """
-    Load a trained SimCLR checkpoint and return the encoder only.
-    """
     model = SimCLRModel(proj_dim=projection_dim).to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
 
-    if "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"])
-    else:
-        model.load_state_dict(checkpoint)
+    try:
+        if "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"])
+        else:
+            model.load_state_dict(checkpoint)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            "Failed to load SimCLR checkpoint due to model architecture mismatch. "
+            "If you recently changed the projector (e.g., added BatchNorm), retrain "
+            "SimCLR and regenerate cached embeddings."
+        ) from exc
 
     return model.encoder
 
 
-def build_embedding_loader(
-    data_root: str,
-    batch_size: int,
-    num_workers: int,
-) -> DataLoader:
-    """
-    Build deterministic loader for embedding extraction.
-    """
-    dataset = get_cifar10_train(root=data_root, transform=get_eval_transform())
+def build_embedding_loader(data_root: str, split: str, batch_size: int, num_workers: int) -> DataLoader:
+    if split == "train":
+        dataset = get_cifar10_train(root=data_root, transform=get_eval_transform())
+    else:
+        dataset = get_cifar10_test(root=data_root, transform=get_eval_transform())
+
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -84,170 +90,373 @@ def load_or_compute_embeddings(
     simclr_checkpoint_path: str | Path,
     projection_dim: int,
     data_root: str,
+    split: str,
     batch_size: int,
     num_workers: int,
     device: torch.device,
 ) -> np.ndarray:
-    """
-    Load cached embeddings if available, otherwise compute and save them.
-    """
     embedding_path = Path(embedding_path)
     embedding_path.parent.mkdir(parents=True, exist_ok=True)
 
     if embedding_path.exists():
-        print(f"Loading cached embeddings from {embedding_path}")
+        print(f"Loading cached {split} embeddings from {embedding_path}")
         return np.load(embedding_path)
 
-    print("Cached embeddings not found. Computing embeddings from SimCLR encoder...")
+    print(f"Cached {split} embeddings not found. Computing from SimCLR encoder...")
     encoder = load_simclr_encoder(
         checkpoint_path=simclr_checkpoint_path,
         projection_dim=projection_dim,
         device=device,
     )
-
     loader = build_embedding_loader(
         data_root=data_root,
+        split=split,
         batch_size=batch_size,
         num_workers=num_workers,
     )
     embeddings = grab_embeddings(encoder=encoder, loader=loader, device=device)
     np.save(embedding_path, embeddings)
-    print(f"Saved embeddings to {embedding_path}")
-
+    print(f"Saved {split} embeddings to {embedding_path}")
     return embeddings
 
 
 def ensure_budget_size(
     selected_indices: np.ndarray,
-    num_samples: int,
+    pool_size: int,
     budget: int,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """
-    Guard against rare cases where KMeans yields an empty cluster and the selector
-    returns fewer than `budget` samples.
-
-    Pads the selection with random, previously unselected indices.
-    """
     selected_indices = np.unique(selected_indices).astype(int)
 
     if len(selected_indices) == budget:
         return np.sort(selected_indices)
-
     if len(selected_indices) > budget:
         return np.sort(selected_indices[:budget])
 
     missing = budget - len(selected_indices)
-    all_indices = np.arange(num_samples)
+    all_indices = np.arange(pool_size)
     remaining = np.setdiff1d(all_indices, selected_indices, assume_unique=False)
-
     filler = rng.choice(remaining, size=missing, replace=False)
-    completed = np.concatenate([selected_indices, filler])
-
-    return np.sort(completed.astype(int))
+    return np.sort(np.concatenate([selected_indices, filler]).astype(int))
 
 
-def select_indices(
+def _select_from_embeddings(
     method: str,
-    embeddings: np.ndarray,
-    cluster_labels: np.ndarray,
-    centroids: np.ndarray,
-    budget: int,
+    pool_embeddings: np.ndarray,
+    query_size: int,
     knn_k: int,
     modified_alpha: float,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """
-    Run one of the supported selection methods.
-    """
     if method == "random":
-        selected = random_selector(
-            num_samples=len(embeddings),
-            budget=budget,
-            rng=rng,
-        )
-    elif method == "tpcrand":
-        selected = tpcrand_selector(
+        return random_selector(num_samples=len(pool_embeddings), budget=query_size, rng=rng)
+    if method == "tpcnoclust":
+        return tpcnoclust_selector(embeddings=pool_embeddings, budget=query_size, knn_k=knn_k)
+    if method == "kcenter":
+        return kcenter_selector(embeddings=pool_embeddings, budget=query_size)
+
+    cluster_labels, centroids = cluster_embeddings(
+        embeddings=pool_embeddings,
+        n_clusters=query_size,
+        random_state=int(rng.integers(0, 1_000_000_000)),
+    )
+
+    if method == "tpcrand":
+        return tpcrand_selector(cluster_labels=cluster_labels, budget=query_size, rng=rng)
+    if method == "tpcrp":
+        return tpcrp_selector(
+            embeddings=pool_embeddings,
             cluster_labels=cluster_labels,
-            budget=budget,
-            rng=rng,
-        )
-    elif method == "tpcrp":
-        selected = tpcrp_selector(
-            embeddings=embeddings,
-            cluster_labels=cluster_labels,
-            budget=budget,
+            budget=query_size,
             knn_k=knn_k,
         )
-    elif method == "tpcrp_modified":
-        selected = tpcrp_modified_selector(
-            embeddings=embeddings,
+    if method == "tpcrp_modified":
+        return tpcrp_modified_selector(
+            embeddings=pool_embeddings,
             cluster_labels=cluster_labels,
             centroids=centroids,
-            budget=budget,
+            budget=query_size,
             knn_k=knn_k,
             alpha=modified_alpha,
         )
-    elif method == "tpcinv":
-        selected = tpcinv_selector(
-            embeddings=embeddings,
+    if method == "tpcinv":
+        return tpcinv_selector(
+            embeddings=pool_embeddings,
             cluster_labels=cluster_labels,
-            budget=budget,
+            budget=query_size,
             knn_k=knn_k,
         )
-    elif method == "tpcnoclust":
-        selected = tpcnoclust_selector(
-            embeddings=embeddings,
-            budget=budget,
-            knn_k=knn_k,
-        )
-    elif method == "kcenter":
-        selected = kcenter_selector(
-            embeddings=embeddings,
-            budget=budget,
-        )
-    else:
-        raise ValueError(f"Unknown method: {method}")
 
-    return ensure_budget_size(
-        selected_indices=selected,
-        num_samples=len(embeddings),
-        budget=budget,
-        rng=rng,
+    raise ValueError(f"Unknown embedding-based selection method: {method}")
+
+
+def _sort_clusters(uncovered: np.ndarray, sizes: np.ndarray, rng: np.random.Generator) -> list[int]:
+    shuffled = uncovered.copy()
+    rng.shuffle(shuffled)
+    return sorted(shuffled.tolist(), key=lambda c: sizes[c], reverse=True)
+
+
+def _select_cluster_based_round(
+    method: str,
+    full_embeddings: np.ndarray,
+    pool_indices: np.ndarray,
+    labeled_indices: np.ndarray,
+    query_size: int,
+    knn_k: int,
+    modified_alpha: float,
+    rng: np.random.Generator,
+    max_clusters: int | None,
+    min_cluster_size: int,
+) -> np.ndarray:
+    if query_size <= 0:
+        return np.array([], dtype=int)
+
+    n = len(full_embeddings)
+    target_k = len(labeled_indices) + query_size
+    if max_clusters is not None and max_clusters > 0:
+        target_k = min(target_k, max_clusters)
+    target_k = max(1, min(target_k, n))
+
+    cluster_labels, centroids = cluster_embeddings(
+        embeddings=full_embeddings,
+        n_clusters=target_k,
+        random_state=int(rng.integers(0, 1_000_000_000)),
     )
 
+    cluster_sizes = np.bincount(cluster_labels, minlength=target_k)
+    labeled_counts = np.zeros(target_k, dtype=int)
+    if len(labeled_indices) > 0:
+        labeled_counts = np.bincount(cluster_labels[labeled_indices], minlength=target_k)
 
-def save_selected_indices(
-    selected_indices: np.ndarray,
-    train_dataset,
-    output_path: str | Path,
-) -> None:
-    """
-    Save selected indices and their labels for later analysis.
-    """
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    uncovered = np.where((labeled_counts == 0) & (cluster_sizes > 0))[0]
+    ordered_clusters: list[int] = _sort_clusters(uncovered, cluster_sizes, rng)
 
-    labels = np.array(train_dataset.targets)[selected_indices]
+    if len(ordered_clusters) < query_size:
+        covered = np.setdiff1d(np.arange(target_k), uncovered, assume_unique=False)
+        covered_list = covered.tolist()
+        rng.shuffle(covered_list)
+        covered_list.sort(key=lambda c: (labeled_counts[c], -cluster_sizes[c]))
+        ordered_clusters.extend(covered_list)
 
-    payload = {
-        "selected_indices": selected_indices.tolist(),
-        "selected_labels": labels.tolist(),
-    }
+    pool_list = pool_indices.tolist()
+    pool_set = set(pool_list)
+    pool_pos = {idx: pos for pos, idx in enumerate(pool_list)}
+    selected: list[int] = []
+    selected_set: set[int] = set()
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    for cluster_id in ordered_clusters:
+        if len(selected) >= query_size:
+            break
+
+        members = np.where(cluster_labels == cluster_id)[0]
+        if len(members) == 0:
+            continue
+
+        candidate_members = np.array([idx for idx in members if idx in pool_set], dtype=int)
+        if len(candidate_members) == 0:
+            continue
+
+        if len(members) < min_cluster_size or method == "tpcrand":
+            pick = int(rng.choice(candidate_members))
+        else:
+            cluster_emb = full_embeddings[members]
+            if method == "tpcrp":
+                scores = compute_typicality_scores(cluster_emb, knn_k)
+            elif method == "tpcinv":
+                scores = -compute_typicality_scores(cluster_emb, knn_k)
+            elif method == "tpcrp_modified":
+                scores = compute_cluster_aware_scores(
+                    cluster_embeddings=cluster_emb,
+                    centroid=centroids[cluster_id],
+                    k=knn_k,
+                    alpha=modified_alpha,
+                )
+            else:
+                raise ValueError(f"Unknown cluster-based method: {method}")
+
+            member_to_local = {m: i for i, m in enumerate(members.tolist())}
+            candidate_locals = np.array([member_to_local[m] for m in candidate_members.tolist()], dtype=int)
+            best_local = int(candidate_locals[np.argmax(scores[candidate_locals])])
+            pick = int(members[best_local])
+
+        if pick not in selected_set:
+            selected.append(pick)
+            selected_set.add(pick)
+
+    if len(selected) < query_size:
+        remaining = [idx for idx in pool_indices.tolist() if idx not in selected_set]
+        if remaining:
+            filler = rng.choice(np.array(remaining, dtype=int), size=min(query_size - len(selected), len(remaining)), replace=False)
+            selected.extend([int(x) for x in np.atleast_1d(filler)])
+
+    selected = selected[:query_size]
+    selected_local = [pool_pos[idx] for idx in selected if idx in pool_pos]
+    return np.array(selected_local, dtype=int)
+
+
+def _select_from_probabilities(method: str, probs: np.ndarray, query_size: int) -> np.ndarray:
+    if method == "uncertainty":
+        scores = probs.max(axis=1)
+        return np.argsort(scores)[:query_size]
+    if method == "margin":
+        top2 = np.sort(np.partition(probs, -2, axis=1)[:, -2:], axis=1)
+        margins = top2[:, 1] - top2[:, 0]
+        return np.argsort(margins)[:query_size]
+    if method == "entropy":
+        ent = -(probs * np.log(np.clip(probs, 1e-12, 1.0))).sum(axis=1)
+        return np.argsort(ent)[-query_size:]
+    raise ValueError(f"Unknown uncertainty method: {method}")
+
+
+@torch.no_grad()
+def _predict_probs_torch_model(
+    model: torch.nn.Module,
+    dataset,
+    indices: np.ndarray,
+    batch_size: int,
+    num_workers: int,
+    device: torch.device,
+) -> np.ndarray:
+    subset_loader = make_subset_loader(
+        dataset=dataset,
+        indices=indices.tolist(),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+    )
+    model.eval()
+    chunks: list[np.ndarray] = []
+    for images, _ in subset_loader:
+        images = images.to(device, non_blocking=True)
+        logits = model(images)
+        probs = torch.softmax(logits, dim=1).cpu().numpy()
+        chunks.append(probs)
+    return np.concatenate(chunks, axis=0)
+
+
+def _forward_logits_and_features_cifar(model: torch.nn.Module, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    features = model.forward_features(images)
+    logits = model.forward_logits_from_features(features)
+    return logits, features
+
+
+@torch.no_grad()
+def _predict_probs_and_features_torch_model(
+    model: torch.nn.Module,
+    dataset,
+    indices: np.ndarray,
+    batch_size: int,
+    num_workers: int,
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray]:
+    subset_loader = make_subset_loader(
+        dataset=dataset,
+        indices=indices.tolist(),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+    )
+    model.eval()
+    probs_chunks: list[np.ndarray] = []
+    feat_chunks: list[np.ndarray] = []
+    for images, _ in subset_loader:
+        images = images.to(device, non_blocking=True)
+        logits, features = _forward_logits_and_features_cifar(model, images)
+        probs = torch.softmax(logits, dim=1).cpu().numpy()
+        probs_chunks.append(probs)
+        feat_chunks.append(features.cpu().numpy())
+    return np.concatenate(probs_chunks, axis=0), np.concatenate(feat_chunks, axis=0)
+
+
+@torch.no_grad()
+def _predict_mc_probs_torch_model(
+    model: torch.nn.Module,
+    dataset,
+    indices: np.ndarray,
+    batch_size: int,
+    num_workers: int,
+    device: torch.device,
+    mc_passes: int = 10,
+    dropout_p: float = 0.2,
+) -> np.ndarray:
+    subset_loader = make_subset_loader(
+        dataset=dataset,
+        indices=indices.tolist(),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+    )
+    model.eval()
+    all_mc: list[np.ndarray] = []
+    for _ in range(mc_passes):
+        chunks: list[np.ndarray] = []
+        for images, _ in subset_loader:
+            images = images.to(device, non_blocking=True)
+            _, features = _forward_logits_and_features_cifar(model, images)
+            dropped = F.dropout(features, p=dropout_p, training=True)
+            logits = model.forward_logits_from_features(dropped)
+            probs = torch.softmax(logits, dim=1).cpu().numpy()
+            chunks.append(probs)
+        all_mc.append(np.concatenate(chunks, axis=0))
+    return np.stack(all_mc, axis=0)  # (T, N, C)
+
+
+def _badge_gradient_embeddings(probs: np.ndarray, features: np.ndarray) -> np.ndarray:
+    num_classes = probs.shape[1]
+    y_hat = np.argmax(probs, axis=1)
+    one_hot = np.eye(num_classes)[y_hat]
+    coeff = probs - one_hot
+    grad = coeff[:, :, None] * features[:, None, :]
+    return grad.reshape(len(features), -1)
+
+
+def _kmeanspp_indices(embeddings: np.ndarray, k: int, rng: np.random.Generator) -> np.ndarray:
+    n = len(embeddings)
+    if k >= n:
+        return np.arange(n, dtype=int)
+
+    norms = np.sum(embeddings * embeddings, axis=1)
+    first = int(np.argmax(norms))
+    selected = [first]
+
+    d2 = np.sum((embeddings - embeddings[first]) ** 2, axis=1)
+    for _ in range(1, k):
+        total = float(d2.sum())
+        if total <= 1e-12:
+            remaining = np.setdiff1d(np.arange(n), np.array(selected, dtype=int), assume_unique=False)
+            next_idx = int(rng.choice(remaining))
+        else:
+            probs = d2 / total
+            next_idx = int(rng.choice(np.arange(n), p=probs))
+        selected.append(next_idx)
+        new_d2 = np.sum((embeddings - embeddings[next_idx]) ** 2, axis=1)
+        d2 = np.minimum(d2, new_d2)
+    return np.array(selected, dtype=int)
+
+
+def _select_bald_from_mc(mc_probs: np.ndarray, query_size: int) -> np.ndarray:
+    # BALD score = H[E[p(y|x,w)]] - E[H[p(y|x,w)]]
+    mean_probs = mc_probs.mean(axis=0)
+    entropy_mean = -(mean_probs * np.log(np.clip(mean_probs, 1e-12, 1.0))).sum(axis=1)
+    entropy_each = -(mc_probs * np.log(np.clip(mc_probs, 1e-12, 1.0))).sum(axis=2)
+    expected_entropy = entropy_each.mean(axis=0)
+    mi = entropy_mean - expected_entropy
+    return np.argsort(mi)[-query_size:]
+
+
+def _round_query_sizes(total_budget: int, rounds: int) -> list[int]:
+    base = total_budget // rounds
+    rem = total_budget % rounds
+    sizes = [base] * rounds
+    for i in range(rem):
+        sizes[i] += 1
+    return sizes
 
 
 def append_metrics_row(metrics_path: str | Path, row: dict[str, Any]) -> None:
-    """
-    Append one experiment result row to a CSV file.
-    """
     metrics_path = Path(metrics_path)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
-
-    write_header = not metrics_path.exists()
-
+    write_header = (not metrics_path.exists()) or metrics_path.stat().st_size == 0
     with open(metrics_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(row.keys()))
         if write_header:
@@ -255,83 +464,19 @@ def append_metrics_row(metrics_path: str | Path, row: dict[str, Any]) -> None:
         writer.writerow(row)
 
 
-def run_single_experiment(
-    config_path: str | Path,
-    method: str,
-    budget: int,
-    seed: int,
+def _train_eval_fully_supervised(
+    selected_indices: np.ndarray,
+    data_root: str,
+    num_workers: int,
+    classifier_cfg: dict[str, Any],
+    device: torch.device,
+    checkpoint_path: Path | None,
 ) -> dict[str, Any]:
-    """
-    Run one full experiment:
-    embeddings -> clustering -> selection -> supervised training -> evaluation
-    """
-    cfg = load_configurations(config_path)
-    set_seed(seed)
-
-    rng = np.random.default_rng(seed)
-    device = get_device()
-
-    data_root = cfg["data"]["root"]
-    num_workers = cfg["data"]["num_workers"]
-
-    simclr_cfg = cfg["simclr"]
-    selection_cfg = cfg["selection"]
-    classifier_cfg = cfg["classifier"]
-
-    embedding_dir = ensure_dir("./results/embeddings")
-    selection_dir = ensure_dir("./results/selections")
-    metrics_dir = ensure_dir("./results/metrics")
-    checkpoint_dir = ensure_dir("./results/checkpoints")
-
-    simclr_checkpoint_path = simclr_cfg["save_path"]
-    checkpoint_stem = Path(simclr_checkpoint_path).stem
-    embedding_path = embedding_dir / f"{checkpoint_stem}_train_embeddings.npy"
-
-    # 1. Load or compute embeddings
-    embeddings = load_or_compute_embeddings(
-        embedding_path=embedding_path,
-        simclr_checkpoint_path=simclr_checkpoint_path,
-        projection_dim=simclr_cfg["projection_dim"],
-        data_root=data_root,
-        batch_size=simclr_cfg["batch_size"],
-        num_workers=num_workers,
-        device=device,
-    )
-
-    # 2. Cluster embeddings
-    cluster_labels, centroids = cluster_embeddings(
-        embeddings=embeddings,
-        n_clusters=budget,
-        random_state=seed,
-    )
-
-    # 3. Select indices
-    selected_indices = select_indices(
-        method=method,
-        embeddings=embeddings,
-        cluster_labels=cluster_labels,
-        centroids=centroids,
-        budget=budget,
-        knn_k=selection_cfg["knn_k"],
-        modified_alpha=selection_cfg["modified_alpha"],
-        rng=rng,
-    )
-    assert len(selected_indices) == budget, f"Expected {budget} selected samples, got {len(selected_indices)}"
-    assert len(np.unique(selected_indices)) == len(selected_indices), "Duplicate selected indices found"
-
-    # 4. Build classifier datasets/loaders
-    train_dataset = get_cifar10_train(
-        root=data_root,
-        transform=get_classifier_train_transform(),
-    )
-    test_dataset = get_cifar10_test(
-        root=data_root,
-        transform=get_eval_transform(),
-    )
-
+    train_dataset = get_cifar10_train(root=data_root, transform=get_classifier_train_transform())
+    test_dataset = get_cifar10_test(root=data_root, transform=get_eval_transform())
     train_loader = make_subset_loader(
         dataset=train_dataset,
-        indices=selected_indices,
+        indices=selected_indices.tolist(),
         batch_size=classifier_cfg["batch_size"],
         shuffle=True,
         num_workers=num_workers,
@@ -343,10 +488,7 @@ def run_single_experiment(
         num_workers=num_workers,
         pin_memory=True,
     )
-
-    # 5. Train downstream classifier
-    classifier_ckpt_path = checkpoint_dir / f"{method}_budget{budget}_seed{seed}.pt"
-    train_result = train_classifier(
+    return train_classifier(
         train_loader=train_loader,
         test_loader=test_loader,
         num_classes=10,
@@ -355,31 +497,335 @@ def run_single_experiment(
         momentum=classifier_cfg["momentum"],
         weight_decay=classifier_cfg["weight_decay"],
         device=device,
-        checkpoint_path=classifier_ckpt_path,
-        verbose=True,
+        checkpoint_path=checkpoint_path,
+        verbose=False,
     )
 
-    # 6. Save selected indices and class distribution
-    selection_output_path = selection_dir / f"{method}_budget{budget}_seed{seed}.json"
-    save_selected_indices(
-        selected_indices=selected_indices,
-        train_dataset=train_dataset,
-        output_path=selection_output_path,
+
+def _train_eval_ssl_embedding(
+    train_embeddings: np.ndarray,
+    test_embeddings: np.ndarray,
+    train_labels: np.ndarray,
+    test_labels: np.ndarray,
+    selected_indices: np.ndarray,
+    seed: int,
+) -> dict[str, Any]:
+    clf = LogisticRegression(
+        max_iter=1000,
+        multi_class="multinomial",
+        solver="lbfgs",
+        random_state=seed,
+        n_jobs=None,
     )
+    clf.fit(train_embeddings[selected_indices], train_labels[selected_indices])
+    probs_test = clf.predict_proba(test_embeddings)
+    preds_test = probs_test.argmax(axis=1)
+    acc = accuracy_score(test_labels, preds_test)
+    loss = log_loss(test_labels, probs_test, labels=np.arange(10))
+    return {
+        "model": clf,
+        "best_test_accuracy": float(acc),
+        "best_epoch": 1,
+        "final_test_loss": float(loss),
+        "final_test_accuracy": float(acc),
+        "history": [],
+    }
 
-    selected_labels = np.array(train_dataset.targets)[selected_indices]
-    selection_summary = summarise_labels(selected_labels, num_classes=10)
 
-    # 7. Save metrics
+def _train_eval_semi_supervised(
+    train_embeddings: np.ndarray,
+    test_embeddings: np.ndarray,
+    train_labels: np.ndarray,
+    test_labels: np.ndarray,
+    selected_indices: np.ndarray,
+) -> dict[str, Any]:
+    y_semi = np.full(len(train_labels), -1, dtype=int)
+    y_semi[selected_indices] = train_labels[selected_indices]
+
+    model = LabelSpreading(kernel="knn", n_neighbors=7, alpha=0.2, max_iter=30)
+    model.fit(train_embeddings, y_semi)
+
+    probs_test = model.predict_proba(test_embeddings)
+    preds_test = probs_test.argmax(axis=1)
+    acc = accuracy_score(test_labels, preds_test)
+    loss = log_loss(test_labels, probs_test, labels=np.arange(10))
+    return {
+        "model": model,
+        "best_test_accuracy": float(acc),
+        "best_epoch": 1,
+        "final_test_loss": float(loss),
+        "final_test_accuracy": float(acc),
+        "history": [],
+    }
+
+
+def run_single_experiment(
+    config_path: str | Path,
+    method: str,
+    budget: int,
+    seed: int,
+    framework: str = "fully_supervised",
+) -> dict[str, Any]:
+    cfg = load_configurations(config_path)
+    set_seed(seed)
+    rng = np.random.default_rng(seed)
+    device = get_device()
+
+    data_root = cfg["data"]["root"]
+    num_workers = cfg["data"]["num_workers"]
+    simclr_cfg = cfg["simclr"]
+    selection_cfg = cfg["selection"]
+    classifier_cfg = cfg["classifier"]
+    experiment_cfg = cfg.get("experiment", {})
+
+    rounds = int(experiment_cfg.get("iterative_rounds", 1))
+    initial_labeled = int(experiment_cfg.get("initial_labeled", 0))
+    max_clusters = experiment_cfg.get("max_clusters")
+    min_cluster_size = int(experiment_cfg.get("min_cluster_size", 5))
+
+    embedding_dir = ensure_dir("./results/embeddings")
+    selection_dir = ensure_dir("./results/selections")
+    metrics_dir = ensure_dir("./results/metrics")
+    checkpoint_dir = ensure_dir("./results/checkpoints")
+
+    train_dataset_eval = get_cifar10_train(root=data_root, transform=get_eval_transform())
+    train_labels = np.array(train_dataset_eval.targets)
+    test_dataset_eval = get_cifar10_test(root=data_root, transform=get_eval_transform())
+    test_labels = np.array(test_dataset_eval.targets)
+
+    simclr_checkpoint_path = simclr_cfg["save_path"]
+    checkpoint_stem = Path(simclr_checkpoint_path).stem
+
+    train_emb_path = embedding_dir / f"{checkpoint_stem}_train_embeddings.npy"
+    test_emb_path = embedding_dir / f"{checkpoint_stem}_test_embeddings.npy"
+
+    need_embeddings = framework in {"ssl_embedding", "semi_supervised"} or method in {
+        "tpcrand",
+        "tpcrp",
+        "tpcrp_modified",
+        "tpcinv",
+        "tpcnoclust",
+        "kcenter",
+    }
+
+    train_embeddings = None
+    test_embeddings = None
+    if need_embeddings:
+        train_embeddings = load_or_compute_embeddings(
+            embedding_path=train_emb_path,
+            simclr_checkpoint_path=simclr_checkpoint_path,
+            projection_dim=simclr_cfg["projection_dim"],
+            data_root=data_root,
+            split="train",
+            batch_size=simclr_cfg["batch_size"],
+            num_workers=num_workers,
+            device=device,
+        )
+        test_embeddings = load_or_compute_embeddings(
+            embedding_path=test_emb_path,
+            simclr_checkpoint_path=simclr_checkpoint_path,
+            projection_dim=simclr_cfg["projection_dim"],
+            data_root=data_root,
+            split="test",
+            batch_size=simclr_cfg["batch_size"],
+            num_workers=num_workers,
+            device=device,
+        )
+
+    all_indices = np.arange(len(train_labels), dtype=int)
+    if initial_labeled > 0:
+        initial_labeled = min(initial_labeled, budget)
+        labeled_indices = rng.choice(all_indices, size=initial_labeled, replace=False).astype(int)
+    else:
+        labeled_indices = np.array([], dtype=int)
+
+    model_state: Any = None
+    round_sizes = _round_query_sizes(max(0, budget - len(labeled_indices)), rounds)
+    round_metrics: list[dict[str, Any]] = []
+
+    for round_id, query_size in enumerate(round_sizes, start=1):
+        if query_size == 0:
+            continue
+
+        pool_indices = np.setdiff1d(all_indices, labeled_indices, assume_unique=False)
+        if len(pool_indices) < query_size:
+            query_size = len(pool_indices)
+
+        if method == "random":
+            local_selected = random_selector(num_samples=len(pool_indices), budget=query_size, rng=rng)
+        elif method in {"uncertainty", "margin", "entropy", "dbal", "bald", "badge"} and model_state is not None:
+            if framework == "fully_supervised":
+                pool_dataset = get_cifar10_train(root=data_root, transform=get_eval_transform())
+                if method == "badge":
+                    probs_pool, feats_pool = _predict_probs_and_features_torch_model(
+                        model=model_state,
+                        dataset=pool_dataset,
+                        indices=pool_indices,
+                        batch_size=classifier_cfg["batch_size"],
+                        num_workers=num_workers,
+                        device=device,
+                    )
+                    grad_emb = _badge_gradient_embeddings(probs_pool, feats_pool)
+                    local_selected = _kmeanspp_indices(grad_emb, query_size, rng)
+                elif method in {"dbal", "bald"}:
+                    mc_probs = _predict_mc_probs_torch_model(
+                        model=model_state,
+                        dataset=pool_dataset,
+                        indices=pool_indices,
+                        batch_size=classifier_cfg["batch_size"],
+                        num_workers=num_workers,
+                        device=device,
+                        mc_passes=int(experiment_cfg.get("mc_passes", 10)),
+                        dropout_p=float(experiment_cfg.get("mc_dropout_p", 0.2)),
+                    )
+                    if method == "dbal":
+                        probs_pool = mc_probs.mean(axis=0)
+                        local_selected = _select_from_probabilities("entropy", probs_pool, query_size)
+                    else:
+                        local_selected = _select_bald_from_mc(mc_probs, query_size)
+                else:
+                    probs_pool = _predict_probs_torch_model(
+                        model=model_state,
+                        dataset=pool_dataset,
+                        indices=pool_indices,
+                        batch_size=classifier_cfg["batch_size"],
+                        num_workers=num_workers,
+                        device=device,
+                    )
+                    local_selected = _select_from_probabilities(method=method, probs=probs_pool, query_size=query_size)
+            elif framework == "ssl_embedding":
+                if method == "badge":
+                    local_selected = kcenter_selector(train_embeddings[pool_indices], query_size)
+                else:
+                    probs_pool = model_state.predict_proba(train_embeddings[pool_indices])
+                    if method == "bald":
+                        local_selected = _select_from_probabilities("entropy", probs_pool, query_size)
+                    elif method == "dbal":
+                        local_selected = _select_from_probabilities("entropy", probs_pool, query_size)
+                    else:
+                        local_selected = _select_from_probabilities(method=method, probs=probs_pool, query_size=query_size)
+            elif framework == "semi_supervised":
+                if method == "badge":
+                    local_selected = kcenter_selector(train_embeddings[pool_indices], query_size)
+                else:
+                    probs_pool = model_state.label_distributions_[pool_indices]
+                    if method == "bald":
+                        local_selected = _select_from_probabilities("entropy", probs_pool, query_size)
+                    elif method == "dbal":
+                        local_selected = _select_from_probabilities("entropy", probs_pool, query_size)
+                    else:
+                        local_selected = _select_from_probabilities(method=method, probs=probs_pool, query_size=query_size)
+            else:
+                raise ValueError(f"Unknown framework: {framework}")
+        elif method in {"uncertainty", "margin", "entropy", "dbal", "bald", "badge"}:
+            # Cold-start fallback for uncertainty-based methods.
+            local_selected = random_selector(num_samples=len(pool_indices), budget=query_size, rng=rng)
+        else:
+            cluster_based_methods = {"tpcrand", "tpcrp", "tpcrp_modified", "tpcinv"}
+            if method in cluster_based_methods:
+                local_selected = _select_cluster_based_round(
+                    method=method,
+                    full_embeddings=train_embeddings,
+                    pool_indices=pool_indices,
+                    labeled_indices=labeled_indices,
+                    query_size=query_size,
+                    knn_k=selection_cfg["knn_k"],
+                    modified_alpha=selection_cfg["modified_alpha"],
+                    rng=rng,
+                    max_clusters=max_clusters,
+                    min_cluster_size=min_cluster_size,
+                )
+            else:
+                local_selected = _select_from_embeddings(
+                    method=method,
+                    pool_embeddings=train_embeddings[pool_indices],
+                    query_size=query_size,
+                    knn_k=selection_cfg["knn_k"],
+                    modified_alpha=selection_cfg["modified_alpha"],
+                    rng=rng,
+                )
+
+        local_selected = ensure_budget_size(
+            selected_indices=local_selected,
+            pool_size=len(pool_indices),
+            budget=query_size,
+            rng=rng,
+        )
+        newly_selected = pool_indices[local_selected]
+        labeled_indices = np.unique(np.concatenate([labeled_indices, newly_selected])).astype(int)
+
+        if framework == "fully_supervised":
+            ckpt = checkpoint_dir / f"{framework}_{method}_budget{budget}_seed{seed}_r{round_id}.pt"
+            train_result = _train_eval_fully_supervised(
+                selected_indices=labeled_indices,
+                data_root=data_root,
+                num_workers=num_workers,
+                classifier_cfg=classifier_cfg,
+                device=device,
+                checkpoint_path=ckpt,
+            )
+            model_state = train_result["model"]
+        elif framework == "ssl_embedding":
+            train_result = _train_eval_ssl_embedding(
+                train_embeddings=train_embeddings,
+                test_embeddings=test_embeddings,
+                train_labels=train_labels,
+                test_labels=test_labels,
+                selected_indices=labeled_indices,
+                seed=seed,
+            )
+            model_state = train_result["model"]
+        elif framework == "semi_supervised":
+            train_result = _train_eval_semi_supervised(
+                train_embeddings=train_embeddings,
+                test_embeddings=test_embeddings,
+                train_labels=train_labels,
+                test_labels=test_labels,
+                selected_indices=labeled_indices,
+            )
+            model_state = train_result["model"]
+        else:
+            raise ValueError(f"Unknown framework: {framework}")
+
+        round_metrics.append(
+            {
+                "round": round_id,
+                "num_selected": int(len(labeled_indices)),
+                "test_accuracy": float(train_result["final_test_accuracy"]),
+                "test_loss": float(train_result["final_test_loss"]),
+            }
+        )
+        print(
+            f"[{framework}][{method}] round {round_id}/{rounds} "
+            f"selected={len(labeled_indices)} test_acc={train_result['final_test_accuracy']:.4f}"
+        )
+
+    if not round_metrics:
+        raise RuntimeError("No rounds were executed. Check budget/round settings.")
+
+    final_result = train_result
+    selection_output_path = selection_dir / f"{framework}_{method}_budget{budget}_seed{seed}.json"
+    payload = {
+        "selected_indices": labeled_indices.tolist(),
+        "selected_labels": train_labels[labeled_indices].tolist(),
+        "round_metrics": round_metrics,
+    }
+    with open(selection_output_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    selection_summary = summarise_labels(train_labels[labeled_indices], num_classes=10)
+
     metrics_row = {
+        "framework": framework,
         "method": method,
         "budget": budget,
         "seed": seed,
-        "best_epoch": train_result["best_epoch"],
-        "best_test_accuracy": train_result["best_test_accuracy"],
-        "final_test_accuracy": train_result["final_test_accuracy"],
-        "final_test_loss": train_result["final_test_loss"],
-        "num_selected": len(selected_indices),
+        "rounds": rounds,
+        "best_epoch": final_result["best_epoch"],
+        "best_test_accuracy": final_result["best_test_accuracy"],
+        "final_test_accuracy": final_result["final_test_accuracy"],
+        "final_test_loss": final_result["final_test_loss"],
+        "num_selected": len(labeled_indices),
     }
     append_metrics_row(metrics_dir / "metrics.csv", metrics_row)
 
@@ -387,11 +833,9 @@ def run_single_experiment(
         "metrics": metrics_row,
         "selection_summary": selection_summary,
         "selection_file": str(selection_output_path),
-        "embedding_file": str(embedding_path),
-        "classifier_checkpoint": str(classifier_ckpt_path),
+        "embedding_file_train": str(train_emb_path) if train_embeddings is not None else None,
+        "embedding_file_test": str(test_emb_path) if test_embeddings is not None else None,
     }
-
     print("\nExperiment complete:")
     print(json.dumps(summary_output, indent=2))
-
     return summary_output

@@ -1,6 +1,7 @@
 from pathlib import Path
 import pandas as pd
 from scipy.stats import ttest_rel
+from pandas.errors import EmptyDataError
 
 def paired_test(df: pd.DataFrame, method_a: str, method_b: str) -> pd.DataFrame:
     rows = []
@@ -47,8 +48,17 @@ def main() -> None:
     if not metrics_path.exists():
         raise FileNotFoundError(f"Could not find metrics file at {metrics_path}")
 
-    df = pd.read_csv(metrics_path)
-    df = df.drop_duplicates(subset=["method", "budget", "seed"], keep="last")
+    try:
+        df = pd.read_csv(metrics_path)
+    except EmptyDataError as exc:
+        raise ValueError(
+            f"Metrics file exists but is empty: {metrics_path}. "
+            "Run experiments first to generate rows."
+        ) from exc
+    dedup_keys = ["method", "budget", "seed"]
+    if "framework" in df.columns:
+        dedup_keys = ["framework"] + dedup_keys
+    df = df.drop_duplicates(subset=dedup_keys, keep="last")
 
     comparisons = [
         ("tpcrp", "random"),
@@ -56,9 +66,17 @@ def main() -> None:
     ]
 
     all_results = []
-    for method_a, method_b in comparisons:
-        result = paired_test(df, method_a, method_b)
-        all_results.append(result)
+    if "framework" in df.columns:
+        for framework in sorted(df["framework"].unique()):
+            sub_df = df[df["framework"] == framework]
+            for method_a, method_b in comparisons:
+                result = paired_test(sub_df, method_a, method_b)
+                result["framework"] = framework
+                all_results.append(result)
+    else:
+        for method_a, method_b in comparisons:
+            result = paired_test(df, method_a, method_b)
+            all_results.append(result)
 
     stats_df = pd.concat(all_results, ignore_index=True)
     output_path = output_dir / "stats_summary.csv"

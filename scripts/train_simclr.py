@@ -1,7 +1,8 @@
 from pathlib import Path
 
 import torch
-from torch.optim import Adam
+from torch.optim import SGD
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 from src.config import load_configurations
@@ -35,10 +36,17 @@ def main() -> None:
 
     model = SimCLRModel(proj_dim=simclr_cfg["projection_dim"]).to(device)
     criterion = NTXentLoss(temperature=simclr_cfg["temperature"])
-    optimizer = Adam(
+    optimizer = SGD(
         model.parameters(),
         lr=simclr_cfg["lr"],
+        momentum=simclr_cfg["momentum"],
+        nesterov=simclr_cfg.get("nesterov", False),
         weight_decay=simclr_cfg["weight_decay"],
+    )
+    scheduler = CosineAnnealingLR(
+        optimizer=optimizer,
+        T_max=simclr_cfg["epochs"],
+        eta_min=simclr_cfg.get("min_lr", 1e-6),
     )
 
     save_path = Path(simclr_cfg["save_path"])
@@ -54,8 +62,13 @@ def main() -> None:
             criterion=criterion,
             device=device,
         )
+        scheduler.step()
+        current_lr = optimizer.param_groups[0]["lr"]
 
-        print(f"[SimCLR Epoch {epoch:03d}/{simclr_cfg['epochs']:03d}] loss={loss:.4f}")
+        print(
+            f"[SimCLR Epoch {epoch:03d}/{simclr_cfg['epochs']:03d}] "
+            f"loss={loss:.4f} lr={current_lr:.6f}"
+        )
 
         if loss < best_loss:
             best_loss = loss
@@ -63,6 +76,8 @@ def main() -> None:
                 {
                     "epoch": epoch,
                     "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "scheduler_state_dict": scheduler.state_dict(),
                     "best_loss": best_loss,
                 },
                 save_path,

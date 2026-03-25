@@ -7,8 +7,11 @@ data:
 
 simclr:
   batch_size: 256
-  epochs: 100
-  lr: 0.001
+  epochs: 500
+  lr: 0.4
+  momentum: 0.9
+  nesterov: false
+  min_lr: 0.000001
   weight_decay: 0.0001
   temperature: 0.5
   projection_dim: 128
@@ -30,6 +33,13 @@ classifier:
   weight_decay: 0.0005
 
 experiment:
-  methods: ["tpcinv", "tpcnoclust", "kcenter"]
+  frameworks: ["fully_supervised", "ssl_embedding", "semi_supervised"]
+  methods: ["random", "tpcrand", "tpcrp", "tpcinv", "tpcnoclust", "kcenter", "uncertainty", "margin","entropy", "dbal","bald", "badge"]
   # seeds: [42, 43, 44]
   seeds: [42,43,44,45,46,47,48,49,50]
+  iterative_rounds: 5
+  initial_labeled: 0
+  max_clusters: 500
+  min_cluster_size: 5
+  mc_passes: 10
+  mc_dropout_p: 0.2

@@ -20,7 +20,7 @@ simclr:
 
 selection:
   knn_k: 20
-  budgets: [10, 20, 30, 50, 100, 150, 200]
+  budgets: [10, 20, 50, 100, 200]
   clustering: "kmeans"
   modified_alpha: 0.7
 
@@ -34,9 +34,9 @@ classifier:
 
 experiment:
   frameworks: ["fully_supervised", "ssl_embedding", "semi_supervised"]
-  methods: ["random", "tpcrand", "tpcrp", "tpcinv", "tpcnoclust", "kcenter", "uncertainty", "margin","entropy", "dbal","bald", "badge"]
-  # seeds: [42, 43, 44]
-  seeds: [42,43,44,45,46,47,48,49,50]
+  methods: ["random", "tpcrand", "tpcrp", "tpcinv", "tpcnoclust", "kcenter", "uncertainty", "margin","entropy", "dbal","bald", "badge", "tpcrp_ccfl"]
+  seeds: [42, 43, 44]
+  # seeds: [42,43,44,45,46,47,48,49,50]
   iterative_rounds: 5
   initial_labeled: 0
   max_clusters: 500

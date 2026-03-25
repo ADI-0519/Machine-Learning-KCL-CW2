@@ -29,6 +29,7 @@ from .selectors import (
     random_selector,
     tpcinv_selector,
     tpcnoclust_selector,
+    tpcrp_ccfl_selector,
     tpcrand_selector,
     tpcrp_modified_selector,
     tpcrp_selector,
@@ -207,6 +208,8 @@ def _select_cluster_based_round(
     rng: np.random.Generator,
     max_clusters: int | None,
     min_cluster_size: int,
+    ccfl_candidates_per_cluster: int,
+    ccfl_refine_steps: int,
 ) -> np.ndarray:
     if query_size <= 0:
         return np.array([], dtype=int)
@@ -243,6 +246,48 @@ def _select_cluster_based_round(
     pool_pos = {idx: pos for pos, idx in enumerate(pool_list)}
     selected: list[int] = []
     selected_set: set[int] = set()
+
+    if method == "tpcrp_ccfl":
+        selected_cluster_ids: list[int] = []
+        for cluster_id in ordered_clusters:
+            if len(selected_cluster_ids) >= query_size:
+                break
+            members = np.where(cluster_labels == cluster_id)[0]
+            if len(members) == 0:
+                continue
+            has_pool_member = any(idx in pool_set for idx in members.tolist())
+            if has_pool_member:
+                selected_cluster_ids.append(int(cluster_id))
+
+        ccfl_selected = tpcrp_ccfl_selector(
+            embeddings=full_embeddings,
+            cluster_labels=cluster_labels,
+            centroids=centroids,
+            selected_cluster_ids=selected_cluster_ids,
+            pool_indices=pool_indices,
+            knn_k=knn_k,
+            candidates_per_cluster=ccfl_candidates_per_cluster,
+            refine_steps=ccfl_refine_steps,
+            cluster_sizes=cluster_sizes,
+            min_cluster_size=min_cluster_size,
+            rng=rng,
+        )
+        selected = [int(idx) for idx in ccfl_selected.tolist()]
+        selected_set = set(selected)
+
+        if len(selected) < query_size:
+            remaining = [idx for idx in pool_indices.tolist() if idx not in selected_set]
+            if remaining:
+                filler = rng.choice(
+                    np.array(remaining, dtype=int),
+                    size=min(query_size - len(selected), len(remaining)),
+                    replace=False,
+                )
+                selected.extend([int(x) for x in np.atleast_1d(filler)])
+
+        selected = selected[:query_size]
+        selected_local = [pool_pos[idx] for idx in selected if idx in pool_pos]
+        return np.array(selected_local, dtype=int)
 
     for cluster_id in ordered_clusters:
         if len(selected) >= query_size:
@@ -498,7 +543,7 @@ def _train_eval_fully_supervised(
         weight_decay=classifier_cfg["weight_decay"],
         device=device,
         checkpoint_path=checkpoint_path,
-        verbose=False,
+        verbose=True,
     )
 
 
@@ -582,6 +627,8 @@ def run_single_experiment(
     initial_labeled = int(experiment_cfg.get("initial_labeled", 0))
     max_clusters = experiment_cfg.get("max_clusters")
     min_cluster_size = int(experiment_cfg.get("min_cluster_size", 5))
+    ccfl_candidates_per_cluster = int(experiment_cfg.get("ccfl_candidates_per_cluster", 5))
+    ccfl_refine_steps = int(experiment_cfg.get("ccfl_refine_steps", 1))
 
     embedding_dir = ensure_dir("./results/embeddings")
     selection_dir = ensure_dir("./results/selections")
@@ -602,6 +649,7 @@ def run_single_experiment(
     need_embeddings = framework in {"ssl_embedding", "semi_supervised"} or method in {
         "tpcrand",
         "tpcrp",
+        "tpcrp_ccfl",
         "tpcrp_modified",
         "tpcinv",
         "tpcnoclust",
@@ -721,7 +769,7 @@ def run_single_experiment(
             # Cold-start fallback for uncertainty-based methods.
             local_selected = random_selector(num_samples=len(pool_indices), budget=query_size, rng=rng)
         else:
-            cluster_based_methods = {"tpcrand", "tpcrp", "tpcrp_modified", "tpcinv"}
+            cluster_based_methods = {"tpcrand", "tpcrp", "tpcrp_ccfl", "tpcrp_modified", "tpcinv"}
             if method in cluster_based_methods:
                 local_selected = _select_cluster_based_round(
                     method=method,
@@ -734,6 +782,8 @@ def run_single_experiment(
                     rng=rng,
                     max_clusters=max_clusters,
                     min_cluster_size=min_cluster_size,
+                    ccfl_candidates_per_cluster=ccfl_candidates_per_cluster,
+                    ccfl_refine_steps=ccfl_refine_steps,
                 )
             else:
                 local_selected = _select_from_embeddings(

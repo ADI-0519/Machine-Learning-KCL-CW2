@@ -30,6 +30,6 @@ classifier:
   weight_decay: 0.0005
 
 experiment:
-  methods: ["random", "tpcrand", "tpcrp"]
+  methods: ["tpcinv", "tpcnoclust", "kcenter"]
   # seeds: [42, 43, 44]
-  seeds: [47]
+  seeds: [42,43,44,45,46,47,48,49,50]

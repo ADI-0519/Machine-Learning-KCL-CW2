@@ -25,6 +25,9 @@ from .selectors import (
     tpcrand_selector,
     tpcrp_modified_selector,
     tpcrp_selector,
+    tpcinv_selector,
+    tpcnoclust_selector,
+    kcenter_selector
 )
 from .train_classifier import train_classifier
 
@@ -184,6 +187,24 @@ def select_indices(
             budget=budget,
             knn_k=knn_k,
             alpha=modified_alpha,
+        )
+    elif method == "tpcinv":
+        selected = tpcinv_selector(
+            embeddings=embeddings,
+            cluster_labels=cluster_labels,
+            budget=budget,
+            knn_k=knn_k,
+        )
+    elif method == "tpcnoclust":
+        selected = tpcnoclust_selector(
+            embeddings=embeddings,
+            budget=budget,
+            knn_k=knn_k,
+        )
+    elif method == "kcenter":
+        selected = kcenter_selector(
+            embeddings=embeddings,
+            budget=budget,
         )
     else:
         raise ValueError(f"Unknown method: {method}")

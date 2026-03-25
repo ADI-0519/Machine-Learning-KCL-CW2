@@ -661,7 +661,19 @@ def _train_eval_semi_supervised(
     model = LabelSpreading(kernel="knn", n_neighbors=7, alpha=0.2, max_iter=30)
     model.fit(train_embeddings, y_semi)
 
-    probs_test = model.predict_proba(test_embeddings)
+    probs_test_partial = model.predict_proba(test_embeddings)
+    probs_test = np.zeros((len(test_embeddings), 10), dtype=np.float64)
+    probs_test[:, model.classes_.astype(int)] = probs_test_partial
+
+    # LabelSpreading can output NaNs in extreme low-label settings.
+    probs_test = np.nan_to_num(probs_test, nan=0.0, posinf=0.0, neginf=0.0)
+    row_sums = probs_test.sum(axis=1, keepdims=True)
+    zero_rows = (row_sums <= 1e-12).reshape(-1)
+    if np.any(zero_rows):
+        probs_test[zero_rows] = 1.0 / probs_test.shape[1]
+        row_sums = probs_test.sum(axis=1, keepdims=True)
+    probs_test = probs_test / np.clip(row_sums, 1e-12, None)
+
     preds_test = probs_test.argmax(axis=1)
     acc = accuracy_score(test_labels, preds_test)
     loss = log_loss(test_labels, probs_test, labels=np.arange(10))

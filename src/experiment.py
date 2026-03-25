@@ -5,10 +5,12 @@ from typing import Any
 
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, log_loss
 from sklearn.semi_supervised import LabelSpreading
+from torch.optim import SGD
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 
 from .clustering import cluster_embeddings
@@ -354,6 +356,18 @@ def _select_from_probabilities(method: str, probs: np.ndarray, query_size: int) 
 
 
 @torch.no_grad()
+def _predict_probs_linear_head(
+    model: nn.Module,
+    embeddings: np.ndarray,
+    device: torch.device,
+) -> np.ndarray:
+    model.eval()
+    x = torch.from_numpy(embeddings.astype(np.float32)).to(device, non_blocking=True)
+    logits = model(x)
+    return torch.softmax(logits, dim=1).cpu().numpy()
+
+
+@torch.no_grad()
 def _predict_probs_torch_model(
     model: torch.nn.Module,
     dataset,
@@ -553,28 +567,84 @@ def _train_eval_ssl_embedding(
     train_labels: np.ndarray,
     test_labels: np.ndarray,
     selected_indices: np.ndarray,
-    seed: int,
+    epochs: int,
+    classifier_cfg: dict[str, Any],
+    device: torch.device,
 ) -> dict[str, Any]:
-    clf = LogisticRegression(
-        max_iter=1000,
-        solver="lbfgs",
-        random_state=seed,
-        n_jobs=None,
+    x_train = torch.from_numpy(train_embeddings[selected_indices].astype(np.float32))
+    y_train = torch.from_numpy(train_labels[selected_indices].astype(np.int64))
+    x_test = torch.from_numpy(test_embeddings.astype(np.float32))
+    y_test = torch.from_numpy(test_labels.astype(np.int64))
+
+    linear = nn.Linear(train_embeddings.shape[1], 10).to(device)
+    criterion = nn.CrossEntropyLoss()
+
+    # Paper-style linear eval uses a much higher LR than end-to-end supervised training.
+    ssl_lr = float(classifier_cfg.get("ssl_embedding_lr", classifier_cfg["lr"] * 100.0))
+    optimizer = SGD(
+        linear.parameters(),
+        lr=ssl_lr,
+        momentum=classifier_cfg.get("momentum", 0.9),
+        weight_decay=classifier_cfg.get("weight_decay", 0.0),
     )
-    clf.fit(train_embeddings[selected_indices], train_labels[selected_indices])
-    probs_test_partial = clf.predict_proba(test_embeddings)
-    probs_test = np.zeros((len(test_embeddings), 10), dtype=np.float64)
-    probs_test[:, clf.classes_.astype(int)] = probs_test_partial
-    preds_test = probs_test.argmax(axis=1)
-    acc = accuracy_score(test_labels, preds_test)
-    loss = log_loss(test_labels, probs_test, labels=np.arange(10))
+    scheduler = CosineAnnealingLR(optimizer, T_max=max(epochs, 1))
+
+    best_acc = -1.0
+    best_epoch = 1
+    best_state = None
+    history: list[dict[str, float | int]] = []
+
+    for epoch in range(1, epochs + 1):
+        linear.train()
+        optimizer.zero_grad(set_to_none=True)
+        logits = linear(x_train.to(device, non_blocking=True))
+        loss = criterion(logits, y_train.to(device, non_blocking=True))
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+
+        linear.eval()
+        with torch.no_grad():
+            test_logits = linear(x_test.to(device, non_blocking=True))
+            probs_test = torch.softmax(test_logits, dim=1).cpu().numpy()
+            preds_test = probs_test.argmax(axis=1)
+            acc = accuracy_score(test_labels, preds_test)
+            test_loss = log_loss(test_labels, probs_test, labels=np.arange(10))
+
+        history.append(
+            {
+                "epoch": epoch,
+                "train_loss": float(loss.item()),
+                "test_loss": float(test_loss),
+                "test_accuracy": float(acc),
+                "lr": float(optimizer.param_groups[0]["lr"]),
+            }
+        )
+
+        if acc > best_acc:
+            best_acc = float(acc)
+            best_epoch = epoch
+            best_state = {k: v.detach().cpu().clone() for k, v in linear.state_dict().items()}
+
+    if best_state is None:
+        raise RuntimeError("No best linear-head state was recorded for ssl_embedding.")
+
+    linear.load_state_dict(best_state)
+    linear.eval()
+    with torch.no_grad():
+        final_logits = linear(x_test.to(device, non_blocking=True))
+        final_probs = torch.softmax(final_logits, dim=1).cpu().numpy()
+        final_preds = final_probs.argmax(axis=1)
+        final_acc = accuracy_score(test_labels, final_preds)
+        final_loss = log_loss(test_labels, final_probs, labels=np.arange(10))
+
     return {
-        "model": clf,
-        "best_test_accuracy": float(acc),
-        "best_epoch": 1,
-        "final_test_loss": float(loss),
-        "final_test_accuracy": float(acc),
-        "history": [],
+        "model": linear,
+        "best_test_accuracy": float(best_acc),
+        "best_epoch": int(best_epoch),
+        "final_test_loss": float(final_loss),
+        "final_test_accuracy": float(final_acc),
+        "history": history,
     }
 
 
@@ -746,7 +816,11 @@ def run_single_experiment(
                 if method == "badge":
                     local_selected = kcenter_selector(train_embeddings[pool_indices], query_size)
                 else:
-                    probs_pool = model_state.predict_proba(train_embeddings[pool_indices])
+                    probs_pool = _predict_probs_linear_head(
+                        model=model_state,
+                        embeddings=train_embeddings[pool_indices],
+                        device=device,
+                    )
                     if method == "bald":
                         local_selected = _select_from_probabilities("entropy", probs_pool, query_size)
                     elif method == "dbal":
@@ -823,7 +897,9 @@ def run_single_experiment(
                 train_labels=train_labels,
                 test_labels=test_labels,
                 selected_indices=labeled_indices,
-                seed=seed,
+                epochs=classifier_cfg["epochs"],
+                classifier_cfg=classifier_cfg,
+                device=device,
             )
             model_state = train_result["model"]
         elif framework == "semi_supervised":

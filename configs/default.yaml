@@ -20,24 +20,24 @@ simclr:
 
 selection:
   knn_k: 20
-  budgets: [10, 20, 50, 100, 200]
-  # budgets: [10]
+  # budgets: [10, 20, 50, 100, 200]
+  budgets: [50]
   clustering: "kmeans"
   modified_alpha: 0.7
 
 classifier:
   backbone: "resnet18"
   batch_size: 64
-  epochs: 50
+  epochs: 30
   lr: 0.025
   momentum: 0.9
   weight_decay: 0.0005
 
 experiment:
-  frameworks: ["fully_supervised", "ssl_embedding", "semi_supervised"]
-  # frameworks: ["fully_supervised"]
-  methods: ["random", "tpcrand", "tpcrp", "tpcinv", "tpcnoclust", "kcenter", "uncertainty", "margin","entropy", "dbal","bald", "badge", "tpcrp_ccfl"]
-  # methods: ["random"]
+  # frameworks: ["fully_supervised", "ssl_embedding", "semi_supervised"]
+  frameworks: ["fully_supervised"]
+  # methods: ["random", "tpcrand", "tpcrp", "tpcinv", "tpcnoclust", "kcenter", "uncertainty", "margin","entropy", "dbal","bald", "badge", "tpcrp_ccfl"]
+  methods: ["random","tpcrand","tpcrp","tpcinv","tpcnoclust", "tpcrp_ccfl"]
   seeds: [42]
   # seeds: [42,43,44,45,46,47,48,49,50]
   iterative_rounds: 2

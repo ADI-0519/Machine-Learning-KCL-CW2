@@ -109,7 +109,7 @@ pip install -r requirements.txt
   - `simclr.save_path` in `configs/default.yaml`
   - default: `results/checkpoints/simclr_resnet18.pt`
 
-Train SimCLR (if checkpoint is missing):
+Train SimCLR:
 
 ```bash
 python -m scripts.train_simclr

@@ -2,6 +2,7 @@ import numpy as np
 from sklearn.cluster import KMeans, MiniBatchKMeans
 
 def cluster_embeddings(embeddings: np.ndarray,n_clusters:int, random_state:int) -> tuple[np.ndarray,np.ndarray]:
+    """Clusters embeddings with KMeans/MiniBatchKMeans and returns labels and centroids."""
     if n_clusters <= 50:
         model = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
     else:

@@ -2,6 +2,7 @@ import numpy as np
 from sklearn.neighbors import NearestNeighbors
 
 def compute_typicality_scores(embeddings: np.ndarray, k: int) -> np.ndarray:
+    """Compute inverse average KNN distance as a typicality score."""
     k_eff = min(k + 1, len(embeddings))
     nn = NearestNeighbors(n_neighbors=k_eff, metric="euclidean")
     nn.fit(embeddings)
@@ -12,12 +13,8 @@ def compute_typicality_scores(embeddings: np.ndarray, k: int) -> np.ndarray:
     return 1.0 / (avg_dist + 1e-12)
 
 
-def compute_cluster_aware_scores(
-    cluster_embeddings: np.ndarray,
-    centroid: np.ndarray,
-    k: int,
-    alpha: float,
-) -> np.ndarray:
+def compute_cluster_aware_scores(cluster_embeddings: np.ndarray,centroid: np.ndarray,k: int,alpha: float) -> np.ndarray:
+    """Blend typicality with centroid proximity for cluster-aware ranking"""
     typ = compute_typicality_scores(cluster_embeddings, k)
 
     dists = np.linalg.norm(cluster_embeddings - centroid[None, :], axis=1)

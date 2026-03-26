@@ -4,6 +4,7 @@ from .typicality import compute_typicality_scores, compute_cluster_aware_scores
 
 
 def random_selector(num_samples: int, budget: int, rng: np.random.Generator) -> np.ndarray:
+    """Randomly sample unique pool indices for the query batch."""
     selected = rng.choice(num_samples, size=budget, replace=False)
     assert len(np.unique(selected)) == len(selected)
     return np.sort(selected)
@@ -11,6 +12,7 @@ def random_selector(num_samples: int, budget: int, rng: np.random.Generator) -> 
 
 
 def tpcrand_selector(cluster_labels: np.ndarray, budget: int, rng: np.random.Generator) -> np.ndarray:
+    """Select one random sample per cluster for TPCRand ablation."""
     selected = []
     for cluster_id in range(budget):
         members = np.where(cluster_labels == cluster_id)[0]
@@ -23,6 +25,7 @@ def tpcrand_selector(cluster_labels: np.ndarray, budget: int, rng: np.random.Gen
 
 
 def tpcrp_selector(embeddings: np.ndarray,cluster_labels: np.ndarray,budget: int,knn_k: int) -> np.ndarray:
+    """Select the most typical sample in each cluster (TPCRP)."""
     selected = []
 
     for cluster_id in range(budget):
@@ -40,6 +43,7 @@ def tpcrp_selector(embeddings: np.ndarray,cluster_labels: np.ndarray,budget: int
 
 
 def tpcrp_modified_selector(embeddings: np.ndarray,cluster_labels: np.ndarray,centroids: np.ndarray,budget: int,knn_k: int,alpha: float) -> np.ndarray:
+    """Select per-cluster samples using cluster-aware typicality scoring"""
     selected = []
 
     for cluster_id in range(budget):
@@ -62,24 +66,13 @@ def tpcrp_modified_selector(embeddings: np.ndarray,cluster_labels: np.ndarray,ce
 
 
 def _cosine_similarity_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Compute cosine similarity matrix between two embedding sets"""
     a_n = a / (np.linalg.norm(a, axis=1, keepdims=True) + 1e-12)
     b_n = b / (np.linalg.norm(b, axis=1, keepdims=True) + 1e-12)
     return a_n @ b_n.T
 
 
-def tpcrp_ccfl_selector(
-    embeddings: np.ndarray,
-    cluster_labels: np.ndarray,
-    centroids: np.ndarray,
-    selected_cluster_ids: list[int],
-    pool_indices: np.ndarray,
-    knn_k: int,
-    candidates_per_cluster: int = 5,
-    refine_steps: int = 1,
-    cluster_sizes: np.ndarray | None = None,
-    min_cluster_size: int = 5,
-    rng: np.random.Generator | None = None,
-) -> np.ndarray:
+def tpcrp_ccfl_selector(embeddings: np.ndarray,cluster_labels: np.ndarray,centroids: np.ndarray,selected_cluster_ids: list[int],pool_indices: np.ndarray,knn_k: int,candidates_per_cluster: int = 5,refine_steps: int = 1,cluster_sizes: np.ndarray | None = None,min_cluster_size: int = 5,rng: np.random.Generator | None = None) -> np.ndarray:
     """
     TPCRP-CCFL:
     1) choose top-typical candidates per selected cluster

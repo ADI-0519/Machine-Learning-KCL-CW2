@@ -6,6 +6,7 @@ from tqdm import tqdm
 
 @torch.no_grad()
 def grab_embeddings(encoder,loader:DataLoader,device:torch.device) -> np.ndarray:
+    """Extract and stack encoder embeddings for all batches in a loader"""
     encoder.eval()
     chunks = []
 

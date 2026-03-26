@@ -7,6 +7,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 def main():
+    """Generate accuracy-vs-budget plots from aggregated metrics."""
     aggregated_path = Path("results/metrics/aggregated_metrics.csv")
     output_dir = Path("results/plots")
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -31,6 +31,7 @@ class NTXentLoss(nn.Module):
 
 
 def train_simclr_epoch(model, loader, optimizer, criterion, device):
+    """Run one SimCLR training epoch and return average contrastive loss."""
     model.train()
     total_loss = 0.0
     total_examples = 0

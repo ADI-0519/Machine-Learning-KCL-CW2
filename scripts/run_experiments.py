@@ -3,6 +3,7 @@ from src.experiment import run_single_experiment
 
 
 def main() -> None:
+    """Run configured experiment grid across frameworks, methods, budgets and seeds."""
     cfg = load_configurations("configs/default.yaml")
 
     methods = cfg["experiment"]["methods"]

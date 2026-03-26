@@ -41,6 +41,7 @@ from .train_classifier import train_classifier
 
 
 def get_device() -> torch.device:
+    """Select CUDA if available, otherwise fall back to CPU."""
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -50,11 +51,8 @@ def ensure_dir(path: str | Path) -> Path:
     return path
 
 
-def load_simclr_encoder(
-    checkpoint_path: str | Path,
-    projection_dim: int,
-    device: torch.device,
-):
+def load_simclr_encoder(checkpoint_path: str | Path,projection_dim: int,device: torch.device):
+    """Load SimCLR checkpoint and return the encoder backbone"""
     model = SimCLRModel(proj_dim=projection_dim).to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
 
@@ -74,6 +72,7 @@ def load_simclr_encoder(
 
 
 def build_embedding_loader(data_root: str, split: str, batch_size: int, num_workers: int) -> DataLoader:
+    """Build a non-shuffled loader for train/test embedding extraction"""
     if split == "train":
         dataset = get_cifar10_train(root=data_root, transform=get_eval_transform())
     else:
@@ -88,16 +87,8 @@ def build_embedding_loader(data_root: str, split: str, batch_size: int, num_work
     )
 
 
-def load_or_compute_embeddings(
-    embedding_path: str | Path,
-    simclr_checkpoint_path: str | Path,
-    projection_dim: int,
-    data_root: str,
-    split: str,
-    batch_size: int,
-    num_workers: int,
-    device: torch.device,
-) -> np.ndarray:
+def load_or_compute_embeddings(embedding_path: str | Path,simclr_checkpoint_path: str | Path,projection_dim: int,data_root: str,split: str,batch_size: int,num_workers: int,device: torch.device) -> np.ndarray:
+    """Load cached embeddings or compute and cache them from SimCLR"""
     embedding_path = Path(embedding_path)
     embedding_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -123,12 +114,8 @@ def load_or_compute_embeddings(
     return embeddings
 
 
-def ensure_budget_size(
-    selected_indices: np.ndarray,
-    pool_size: int,
-    budget: int,
-    rng: np.random.Generator,
-) -> np.ndarray:
+def ensure_budget_size(selected_indices: np.ndarray,pool_size: int,budget: int,rng: np.random.Generator) -> np.ndarray:
+    """Enforce exactly budget-sized unique selections using random fill or truncation"""
     selected_indices = np.unique(selected_indices).astype(int)
 
     if len(selected_indices) == budget:
@@ -143,14 +130,8 @@ def ensure_budget_size(
     return np.sort(np.concatenate([selected_indices, filler]).astype(int))
 
 
-def _select_from_embeddings(
-    method: str,
-    pool_embeddings: np.ndarray,
-    query_size: int,
-    knn_k: int,
-    modified_alpha: float,
-    rng: np.random.Generator,
-) -> np.ndarray:
+def _select_from_embeddings(method: str,pool_embeddings: np.ndarray,query_size: int,knn_k: int,modified_alpha: float,rng: np.random.Generator) -> np.ndarray:
+    """Run embedding space selection for non-iterative methods."""
     if method == "random":
         return random_selector(num_samples=len(pool_embeddings), budget=query_size, rng=rng)
     if method == "tpcnoclust":
@@ -167,52 +148,24 @@ def _select_from_embeddings(
     if method == "tpcrand":
         return tpcrand_selector(cluster_labels=cluster_labels, budget=query_size, rng=rng)
     if method == "tpcrp":
-        return tpcrp_selector(
-            embeddings=pool_embeddings,
-            cluster_labels=cluster_labels,
-            budget=query_size,
-            knn_k=knn_k,
-        )
+        return tpcrp_selector(embeddings=pool_embeddings,cluster_labels=cluster_labels,budget=query_size,knn_k=knn_k)
     if method == "tpcrp_modified":
-        return tpcrp_modified_selector(
-            embeddings=pool_embeddings,
-            cluster_labels=cluster_labels,
-            centroids=centroids,
-            budget=query_size,
-            knn_k=knn_k,
-            alpha=modified_alpha,
-        )
+        return tpcrp_modified_selector(embeddings=pool_embeddings,cluster_labels=cluster_labels,centroids=centroids,budget=query_size,knn_k=knn_k,alpha=modified_alpha)
     if method == "tpcinv":
-        return tpcinv_selector(
-            embeddings=pool_embeddings,
-            cluster_labels=cluster_labels,
-            budget=query_size,
-            knn_k=knn_k,
-        )
+        return tpcinv_selector(embeddings=pool_embeddings,cluster_labels=cluster_labels,budget=query_size,knn_k=knn_k)
 
     raise ValueError(f"Unknown embedding-based selection method: {method}")
 
 
 def _sort_clusters(uncovered: np.ndarray, sizes: np.ndarray, rng: np.random.Generator) -> list[int]:
+    """Random tie break then sort cluster IDs by descending cluster size"""
     shuffled = uncovered.copy()
     rng.shuffle(shuffled)
     return sorted(shuffled.tolist(), key=lambda c: sizes[c], reverse=True)
 
 
-def _select_cluster_based_round(
-    method: str,
-    full_embeddings: np.ndarray,
-    pool_indices: np.ndarray,
-    labeled_indices: np.ndarray,
-    query_size: int,
-    knn_k: int,
-    modified_alpha: float,
-    rng: np.random.Generator,
-    max_clusters: int | None,
-    min_cluster_size: int,
-    ccfl_candidates_per_cluster: int,
-    ccfl_refine_steps: int,
-) -> np.ndarray:
+def _select_cluster_based_round(method: str,full_embeddings: np.ndarray,pool_indices: np.ndarray,labeled_indices: np.ndarray,query_size: int,knn_k: int,modified_alpha: float,rng: np.random.Generator,max_clusters: int | None,min_cluster_size: int,ccfl_candidates_per_cluster: int,ccfl_refine_steps: int) -> np.ndarray:
+    """Perform one iterative cluster-based query round on full embeddings"""
     if query_size <= 0:
         return np.array([], dtype=int)
 
@@ -222,11 +175,7 @@ def _select_cluster_based_round(
         target_k = min(target_k, max_clusters)
     target_k = max(1, min(target_k, n))
 
-    cluster_labels, centroids = cluster_embeddings(
-        embeddings=full_embeddings,
-        n_clusters=target_k,
-        random_state=int(rng.integers(0, 1_000_000_000)),
-    )
+    cluster_labels, centroids = cluster_embeddings(embeddings=full_embeddings,n_clusters=target_k,random_state=int(rng.integers(0, 1_000_000_000)))
 
     cluster_sizes = np.bincount(cluster_labels, minlength=target_k)
     labeled_counts = np.zeros(target_k, dtype=int)
@@ -342,6 +291,7 @@ def _select_cluster_based_round(
 
 
 def _select_from_probabilities(method: str, probs: np.ndarray, query_size: int) -> np.ndarray:
+    """Select query indices using uncertainty, margin or entropy scores"""
     if method == "uncertainty":
         scores = probs.max(axis=1)
         return np.argsort(scores)[:query_size]
@@ -356,11 +306,8 @@ def _select_from_probabilities(method: str, probs: np.ndarray, query_size: int) 
 
 
 @torch.no_grad()
-def _predict_probs_linear_head(
-    model: nn.Module,
-    embeddings: np.ndarray,
-    device: torch.device,
-) -> np.ndarray:
+def _predict_probs_linear_head(model: nn.Module,embeddings: np.ndarray,device: torch.device) -> np.ndarray:
+    """Predict class probabilities from the SSL linear head"""
     model.eval()
     x = torch.from_numpy(embeddings.astype(np.float32)).to(device, non_blocking=True)
     logits = model(x)
@@ -368,12 +315,7 @@ def _predict_probs_linear_head(
 
 
 @torch.no_grad()
-def _predict_mc_probs_linear_head(
-    model: nn.Module,
-    embeddings: np.ndarray,
-    device: torch.device,
-    mc_passes: int = 10,
-) -> np.ndarray:
+def _predict_mc_probs_linear_head(model: nn.Module,embeddings: np.ndarray,device: torch.device,mc_passes: int = 10) -> np.ndarray:
     """
     MC-dropout predictions for ssl_embedding.
     Returns shape (T, N, C).
@@ -391,21 +333,9 @@ def _predict_mc_probs_linear_head(
 
 
 @torch.no_grad()
-def _predict_probs_torch_model(
-    model: torch.nn.Module,
-    dataset,
-    indices: np.ndarray,
-    batch_size: int,
-    num_workers: int,
-    device: torch.device,
-) -> np.ndarray:
-    subset_loader = make_subset_loader(
-        dataset=dataset,
-        indices=indices.tolist(),
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-    )
+def _predict_probs_torch_model(model: torch.nn.Module,dataset,indices: np.ndarray,batch_size: int,num_workers: int,device: torch.device) -> np.ndarray:
+    """Predict probabilities from a trained torch classifier on subset indices."""
+    subset_loader = make_subset_loader(dataset=dataset,indices=indices.tolist(),batch_size=batch_size,shuffle=False,num_workers=num_workers)
     model.eval()
     chunks: list[np.ndarray] = []
     for images, _ in subset_loader:
@@ -417,27 +347,16 @@ def _predict_probs_torch_model(
 
 
 def _forward_logits_and_features_cifar(model: torch.nn.Module, images: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return classifier logits and penultimate features in one forward pass"""
     features = model.forward_features(images)
     logits = model.forward_logits_from_features(features)
     return logits, features
 
 
 @torch.no_grad()
-def _predict_probs_and_features_torch_model(
-    model: torch.nn.Module,
-    dataset,
-    indices: np.ndarray,
-    batch_size: int,
-    num_workers: int,
-    device: torch.device,
-) -> tuple[np.ndarray, np.ndarray]:
-    subset_loader = make_subset_loader(
-        dataset=dataset,
-        indices=indices.tolist(),
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-    )
+def _predict_probs_and_features_torch_model(model: torch.nn.Module,dataset,indices: np.ndarray,batch_size: int,num_workers: int,device: torch.device) -> tuple[np.ndarray, np.ndarray]:
+    """Predict both probabilities and features for BADGE-style selection"""
+    subset_loader = make_subset_loader(dataset=dataset,indices=indices.tolist(),batch_size=batch_size,shuffle=False,num_workers=num_workers)
     model.eval()
     probs_chunks: list[np.ndarray] = []
     feat_chunks: list[np.ndarray] = []
@@ -451,16 +370,8 @@ def _predict_probs_and_features_torch_model(
 
 
 @torch.no_grad()
-def _predict_mc_probs_torch_model(
-    model: torch.nn.Module,
-    dataset,
-    indices: np.ndarray,
-    batch_size: int,
-    num_workers: int,
-    device: torch.device,
-    mc_passes: int = 10,
-    dropout_p: float = 0.2,
-) -> np.ndarray:
+def _predict_mc_probs_torch_model(model: torch.nn.Module,dataset,indices: np.ndarray,batch_size: int,num_workers: int,device: torch.device,mc_passes: int = 10,dropout_p: float = 0.2) -> np.ndarray:
+    """Produce MC probability samples from the supervised classifier with dropout"""
     subset_loader = make_subset_loader(
         dataset=dataset,
         indices=indices.tolist(),
@@ -484,6 +395,7 @@ def _predict_mc_probs_torch_model(
 
 
 def _badge_gradient_embeddings(probs: np.ndarray, features: np.ndarray) -> np.ndarray:
+    """Build BADGE gradient embeddings from probabilities and features"""
     num_classes = probs.shape[1]
     y_hat = np.argmax(probs, axis=1)
     one_hot = np.eye(num_classes)[y_hat]
@@ -493,6 +405,7 @@ def _badge_gradient_embeddings(probs: np.ndarray, features: np.ndarray) -> np.nd
 
 
 def _kmeanspp_indices(embeddings: np.ndarray, k: int, rng: np.random.Generator) -> np.ndarray:
+    """Select diverse indices via k-means++ style farthest sampling"""
     n = len(embeddings)
     if k >= n:
         return np.arange(n, dtype=int)
@@ -517,6 +430,7 @@ def _kmeanspp_indices(embeddings: np.ndarray, k: int, rng: np.random.Generator) 
 
 
 def _select_bald_from_mc(mc_probs: np.ndarray, query_size: int) -> np.ndarray:
+    """Select highest BALD mutual-information points from MC predictions"""
     # BALD score = H[E[p(y|x,w)]] - E[H[p(y|x,w)]]
     mean_probs = mc_probs.mean(axis=0)
     entropy_mean = -(mean_probs * np.log(np.clip(mean_probs, 1e-12, 1.0))).sum(axis=1)
@@ -526,12 +440,7 @@ def _select_bald_from_mc(mc_probs: np.ndarray, query_size: int) -> np.ndarray:
     return np.argsort(mi)[-query_size:]
 
 
-def _predict_mc_probs_label_spreading(
-    model: LabelSpreading,
-    embeddings: np.ndarray,
-    mc_passes: int = 10,
-    dropout_p: float = 0.2,
-) -> np.ndarray:
+def _predict_mc_probs_label_spreading(model: LabelSpreading,embeddings: np.ndarray,mc_passes: int = 10,dropout_p: float = 0.2) -> np.ndarray:
     """
     Lightweight stochastic predictions for semi_supervised selection.
     We apply feature dropout to embeddings at inference and query predict_proba.
@@ -558,6 +467,7 @@ def _predict_mc_probs_label_spreading(
 
 
 def _round_query_sizes(total_budget: int, rounds: int) -> list[int]:
+    """Split total budget across AL rounds as evenly as possible"""
     base = total_budget // rounds
     rem = total_budget % rounds
     sizes = [base] * rounds
@@ -567,6 +477,7 @@ def _round_query_sizes(total_budget: int, rounds: int) -> list[int]:
 
 
 def append_metrics_row(metrics_path: str | Path, row: dict[str, Any]) -> None:
+    """Append one experiment result row to metrics CSV with header handling."""
     metrics_path = Path(metrics_path)
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     write_header = (not metrics_path.exists()) or metrics_path.stat().st_size == 0
@@ -577,14 +488,8 @@ def append_metrics_row(metrics_path: str | Path, row: dict[str, Any]) -> None:
         writer.writerow(row)
 
 
-def _train_eval_fully_supervised(
-    selected_indices: np.ndarray,
-    data_root: str,
-    num_workers: int,
-    classifier_cfg: dict[str, Any],
-    device: torch.device,
-    checkpoint_path: Path | None,
-) -> dict[str, Any]:
+def _train_eval_fully_supervised(selected_indices: np.ndarray,data_root: str,num_workers: int,classifier_cfg: dict[str, Any],device: torch.device,checkpoint_path: Path | None) -> dict[str, Any]:
+    """Train and evaluate the supervised CNN on current labeled indices"""
     train_dataset = get_cifar10_train(root=data_root, transform=get_classifier_train_transform())
     test_dataset = get_cifar10_test(root=data_root, transform=get_eval_transform())
     train_loader = make_subset_loader(
@@ -615,16 +520,8 @@ def _train_eval_fully_supervised(
     )
 
 
-def _train_eval_ssl_embedding(
-    train_embeddings: np.ndarray,
-    test_embeddings: np.ndarray,
-    train_labels: np.ndarray,
-    test_labels: np.ndarray,
-    selected_indices: np.ndarray,
-    epochs: int,
-    classifier_cfg: dict[str, Any],
-    device: torch.device,
-) -> dict[str, Any]:
+def _train_eval_ssl_embedding(train_embeddings: np.ndarray,test_embeddings: np.ndarray,train_labels: np.ndarray,test_labels: np.ndarray,selected_indices: np.ndarray,epochs: int,classifier_cfg: dict[str, Any],device: torch.device) -> dict[str, Any]:
+    """Train and evaluate a dropout linear head on fixed SSL embeddings"""
     x_train = torch.from_numpy(train_embeddings[selected_indices].astype(np.float32))
     y_train = torch.from_numpy(train_labels[selected_indices].astype(np.int64))
     x_test = torch.from_numpy(test_embeddings.astype(np.float32))
@@ -706,13 +603,8 @@ def _train_eval_ssl_embedding(
     }
 
 
-def _train_eval_semi_supervised(
-    train_embeddings: np.ndarray,
-    test_embeddings: np.ndarray,
-    train_labels: np.ndarray,
-    test_labels: np.ndarray,
-    selected_indices: np.ndarray,
-) -> dict[str, Any]:
+def _train_eval_semi_supervised(train_embeddings: np.ndarray,test_embeddings: np.ndarray,train_labels: np.ndarray,test_labels: np.ndarray,selected_indices: np.ndarray) -> dict[str, Any]:
+    """Fit LabelSpreading on embeddings and evaluate on test embeddings"""
     y_semi = np.full(len(train_labels), -1, dtype=int)
     y_semi[selected_indices] = train_labels[selected_indices]
 
@@ -745,13 +637,8 @@ def _train_eval_semi_supervised(
     }
 
 
-def run_single_experiment(
-    config_path: str | Path,
-    method: str,
-    budget: int,
-    seed: int,
-    framework: str = "fully_supervised",
-) -> dict[str, Any]:
+def run_single_experiment(config_path: str | Path,method: str,budget: int,seed: int,framework: str = "fully_supervised") -> dict[str, Any]:
+    """Execute one full experiment setting and log metrics plus selections"""
     cfg = load_configurations(config_path)
     set_seed(seed)
     rng = np.random.default_rng(seed)

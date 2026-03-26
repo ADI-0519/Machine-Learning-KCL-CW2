@@ -3,9 +3,11 @@ import pandas as pd
 from pandas.errors import EmptyDataError
 
 def format_mean_std(mean,std):
+    """Format mean and std accuracy as a percent plus-minus string"""
     return f"{mean*100:.2f} $\\pm$ {std*100:.2f}"
 
 def main():
+    """Aggregate raw metrics by method/budget/(framework) and export summary tables."""
     metrics_path = Path("results/metrics/metrics.csv")
     output_dir = Path("results/metrics")
     output_dir.mkdir(parents=True, exist_ok=True)

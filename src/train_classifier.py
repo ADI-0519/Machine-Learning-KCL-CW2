@@ -10,6 +10,7 @@ from tqdm import tqdm
 from .models import CIFARClassifier
 
 def train_one_epoch(model:nn.Module, loader: torch.utils.data.DataLoader,optimiser: torch.optim.Optimizer,criterion: nn.Module,device: torch.device):
+    """Train classifier for one epoch and return loss/accuracy metrics"""
     model.train()
     total_loss = 0.0
     total_correct = 0
@@ -37,6 +38,7 @@ def train_one_epoch(model:nn.Module, loader: torch.utils.data.DataLoader,optimis
 
 @torch.no_grad()
 def evaluate_classifier(model: nn.Module,loader: torch.utils.data.DataLoader,criterion: nn.Module,device: torch.device) -> dict[str, float]:
+    """Evaluate classifier on validation/test loader and return metrics."""
     model.eval()
 
     total_loss = 0.0
@@ -62,6 +64,7 @@ def evaluate_classifier(model: nn.Module,loader: torch.utils.data.DataLoader,cri
 
 
 def save_checkpoint(model: nn.Module,optimiser: torch.optim.Optimizer,scheduler: torch.optim.lr_scheduler.LRScheduler | None,epoch: int,metrics: dict[str, float],checkpoint_path: str | Path) -> None:
+    """Save model state and training metadata to a checkpoint file"""
     checkpoint_path = Path(checkpoint_path)
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -74,6 +77,7 @@ def save_checkpoint(model: nn.Module,optimiser: torch.optim.Optimizer,scheduler:
 
 
 def train_classifier(train_loader: torch.utils.data.DataLoader,test_loader: torch.utils.data.DataLoader,num_classes: int,epochs: int,lr: float,momentum: float,weight_decay: float,device: torch.device,checkpoint_path: str | Path | None = None,verbose: bool = True) -> dict[str, Any]:
+    """Train classifier across epochs, track best checkpoint, and return results."""
     model = CIFARClassifier(num_classes=num_classes).to(device)
     criterion = nn.CrossEntropyLoss()
     optimiser = SGD(

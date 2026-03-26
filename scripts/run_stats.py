@@ -4,6 +4,7 @@ from scipy.stats import ttest_rel
 from pandas.errors import EmptyDataError
 
 def paired_test(df: pd.DataFrame, method_a: str, method_b: str) -> pd.DataFrame:
+    """Compute paired t-test statistics between two methods by budget"""
     rows = []
 
     for budget in sorted(df["budget"].unique()):
@@ -41,6 +42,7 @@ def paired_test(df: pd.DataFrame, method_a: str, method_b: str) -> pd.DataFrame:
 
 
 def main() -> None:
+    """Run configured statistical comparisons and save test results."""
     metrics_path = Path("results/metrics/metrics.csv")
     output_dir = Path("results/metrics")
     output_dir.mkdir(parents=True, exist_ok=True)

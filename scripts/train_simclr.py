@@ -13,6 +13,7 @@ from src.simclr import NTXentLoss, train_simclr_epoch
 
 
 def main() -> None:
+    """Train SimCLR encoder on CIFAR-10 and save checkpoint"""
     cfg = load_configurations("configs/default.yaml")
     set_seed(cfg["seed"])
 

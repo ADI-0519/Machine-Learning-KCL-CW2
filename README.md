@@ -118,7 +118,7 @@ python -m scripts.train_simclr
 ## Run Experiments
 
 Use `configs/default.yaml`
-Run full experiment grid configured in YAML (which runs all 3 frameworks and the different baselines including the modified tpcrc):
+Run full experiment grid configured in YAML (which runs all 3 frameworks and the different baselines including the modified tpcrp):
 
 ```bash
 python -m scripts.run_experiments

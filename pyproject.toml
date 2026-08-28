@@ -18,11 +18,37 @@ dependencies = [
   "matplotlib",
   "pyyaml",
   "tqdm",
+  "transformers==4.57.6",
+  "huggingface-hub==0.36.2",
+  "safetensors==0.8.0",
+  "truststore==0.10.4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8,<9",
+  "pytest-cov>=5,<7",
+  "ruff>=0.6,<1",
 ]
 
 [project.scripts]
 train-simclr = "scripts.train_simclr:main"
 run-experiments = "scripts.run_experiments:main"
+prepare-dinov2 = "scripts.prepare_dinov2:main"
 
 [tool.setuptools.packages.find]
 include = ["src*", "scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+# The notebook is a historical submission export; specs contain illustrative
+# snippets rather than importable project modules.
+extend-exclude = ["notebooks", "specs"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

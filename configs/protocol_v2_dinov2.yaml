@@ -1,0 +1,76 @@
+protocol:
+  version: "2.0"
+  deterministic: true
+  test_evaluations_per_round: 1
+
+output:
+  root: "./results/protocol_v2_confirmation_dinov2"
+  resume: true
+
+data:
+  name: "cifar10"
+  root: "./data"
+  num_workers: 2
+  num_classes: 10
+
+representation:
+  backend: "dinov2"
+  checkpoint_path: "./results/checkpoints/dinov2-small/model.safetensors"
+  model_id: "facebook/dinov2-small"
+  model_revision: "ed25f3a31f01632728cabb09d1542f84ab7b0056"
+  weights_sha256: "ae1e99fcefd534ed978cdeb8326f08030c96e28b7a81ffcbc98a857c84d14be1"
+  feature_dim: 384
+  resize_size: 256
+  crop_size: 224
+  batch_size: 32
+  embedding_seed: 21
+
+selection:
+  round_query_sizes: [10, 10, 10, 10, 10]
+  knn_k: 20
+  max_clusters: 500
+  min_cluster_size: 5
+
+evaluation:
+  framework: "ssl_embedding"
+  epochs: 60
+  batch_size: 64
+  lr: 2.5
+  momentum: 0.9
+  weight_decay: 0.0005
+  dropout_p: 0.2
+  test_policy: "once_after_fixed_epochs"
+
+experiment:
+  methods: ["tpcrp", "tpcrp_ccfl"]
+  replicate_seeds: [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  primary_comparison:
+    method_a: "tpcrp_ccfl"
+    method_b: "tpcrp"
+    cumulative_budget: 10
+    metric: "test_accuracy"
+
+ccfl_variants:
+  tpcrp_ccfl:
+    candidates_per_cluster: 5
+    refine_steps: 1
+    use_cluster_weights: true
+  ccfl_candidate_only:
+    candidates_per_cluster: 5
+    refine_steps: 0
+    use_cluster_weights: false
+  ccfl_unweighted:
+    candidates_per_cluster: 5
+    refine_steps: 1
+    use_cluster_weights: false
+  ccfl_weighted:
+    candidates_per_cluster: 5
+    refine_steps: 1
+    use_cluster_weights: true
+
+probcover:
+  alpha: 0.95
+  delta_search:
+    minimum: 0.05
+    maximum: 1.50
+    step: 0.01

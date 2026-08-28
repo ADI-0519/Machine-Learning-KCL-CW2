@@ -8,17 +8,17 @@ from torch.utils.data import DataLoader
 from src.config import load_configurations
 from src.data import SimCLRTransform, get_cifar10_train
 from src.models import SimCLRModel
-from src.seed import set_seed
+from src.seed import make_generator, seed_worker, set_seed
 from src.simclr import NTXentLoss, train_simclr_epoch
 
 
 def main() -> None:
-    """Train SimCLR encoder on CIFAR-10 and save checkpoint"""
+    """Train a SimCLR encoder on CIFAR-10 and save the best training-loss checkpoint."""
     cfg = load_configurations("configs/default.yaml")
     set_seed(cfg["seed"])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("Using device:",device)
+    print("Using device:", device)
     simclr_cfg = cfg["simclr"]
     data_cfg = cfg["data"]
 
@@ -26,7 +26,16 @@ def main() -> None:
         root=data_cfg["root"],
         transform=SimCLRTransform(),
     )
-    loader = DataLoader(dataset,batch_size=simclr_cfg["batch_size"],shuffle=True,num_workers=data_cfg["num_workers"],pin_memory=True,drop_last=True)
+    loader = DataLoader(
+        dataset,
+        batch_size=simclr_cfg["batch_size"],
+        shuffle=True,
+        num_workers=data_cfg["num_workers"],
+        pin_memory=torch.cuda.is_available(),
+        drop_last=True,
+        worker_init_fn=seed_worker,
+        generator=make_generator(int(cfg["seed"])),
+    )
 
     model = SimCLRModel(proj_dim=simclr_cfg["projection_dim"]).to(device)
     criterion = NTXentLoss(temperature=simclr_cfg["temperature"])
@@ -34,13 +43,13 @@ def main() -> None:
         model.parameters(),
         lr=simclr_cfg["lr"],
         momentum=simclr_cfg["momentum"],
-        nesterov=simclr_cfg.get("nesterov", False),
+        nesterov=simclr_cfg["nesterov"],
         weight_decay=simclr_cfg["weight_decay"],
     )
     scheduler = CosineAnnealingLR(
         optimizer=optimizer,
         T_max=simclr_cfg["epochs"],
-        eta_min=simclr_cfg.get("min_lr", 1e-6),
+        eta_min=simclr_cfg["min_lr"],
     )
 
     save_path = Path(simclr_cfg["save_path"])
@@ -68,11 +77,15 @@ def main() -> None:
             best_loss = loss
             torch.save(
                 {
+                    "checkpoint_format_version": 1,
                     "epoch": epoch,
                     "model_state_dict": model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict(),
                     "best_loss": best_loss,
+                    "training_seed": int(cfg["seed"]),
+                    "data_config": data_cfg,
+                    "simclr_config": simclr_cfg,
                 },
                 save_path,
             )

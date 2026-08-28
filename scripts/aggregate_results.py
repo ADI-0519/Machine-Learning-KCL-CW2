@@ -1,150 +1,262 @@
+"""Build deterministic round-level and summary reports from canonical artifacts."""
+
+from __future__ import annotations
+
+import argparse
+import os
+from collections.abc import Sequence
+from copy import deepcopy
 from pathlib import Path
+from typing import Any
+
 import pandas as pd
-from pandas.errors import EmptyDataError
 
-MAIN_METHODS = ["random", "tpcrand", "tpcrp", "tpcinv", "tpcnoclust", "tpcrp_ccfl"]
-MOD_METHODS = ["tpcrp", "tpcrp_ccfl"]
+from src.artifacts import canonical_json, config_digest, read_artifact
+from src.config import validate_protocol_config
 
-def format_mean_std(mean: float, std: float) -> str:
-    """Format mean and std accuracy as a percent plus-minus string."""
-    return f"{mean * 100:.2f} $\\pm$ {std * 100:.2f}"
+ROUND_REPORT_COLUMNS = [
+    "protocol_version",
+    "source_config_digest",
+    "run_id",
+    "config_digest",
+    "dataset",
+    "framework",
+    "method",
+    "replicate_seed",
+    "round",
+    "query_size",
+    "cumulative_budget",
+    "trained_epochs",
+    "test_loss",
+    "test_accuracy",
+    "nearest_distance_mean",
+    "nearest_distance_p95",
+    "nearest_distance_max",
+    "selected_pairwise_cosine_mean",
+    "selected_typicality_mean",
+    "selector_seconds",
+    "new_indices_json",
+    "selected_indices_json",
+    "method_metadata_json",
+]
+ROUND_SORT_COLUMNS = [
+    "dataset",
+    "framework",
+    "method",
+    "replicate_seed",
+    "cumulative_budget",
+]
+SUMMARY_COLUMNS = [
+    "dataset",
+    "framework",
+    "method",
+    "cumulative_budget",
+    "accuracy_mean",
+    "accuracy_std",
+    "replicate_count",
+    "nearest_distance_mean",
+    "nearest_distance_p95_mean",
+    "nearest_distance_max_mean",
+    "selected_pairwise_cosine_mean",
+    "selected_typicality_mean",
+    "selector_seconds_mean",
+]
 
 
-def dedupe(df: pd.DataFrame) -> pd.DataFrame:
-    dedup_keys = ["method", "budget", "seed"]
-    if "framework" in df.columns:
-        dedup_keys = ["framework"] + dedup_keys
-    return df.drop_duplicates(subset=dedup_keys, keep="last")
+def load_validated_artifacts(root: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Load one internally consistent artifact set without tolerating bad runs."""
+    artifact_paths = sorted((root / "runs").glob("*.json"))
+    if not artifact_paths:
+        raise FileNotFoundError(f"No canonical run artifacts found under {root / 'runs'}")
 
+    artifacts: list[dict[str, Any]] = []
+    run_ids: set[str] = set()
+    source_digests: set[str] = set()
+    source_config: dict[str, Any] | None = None
 
-def _aggregate_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    group_keys = ["method", "budget"]
-    if "framework" in df.columns:
-        group_keys = ["framework"] + group_keys
+    for path in artifact_paths:
+        artifact = read_artifact(path)
+        run_id = str(artifact["run_id"])
+        if path.stem != run_id:
+            raise ValueError(
+                f"Artifact filename {path.name!r} does not match embedded run_id {run_id!r}"
+            )
+        if run_id in run_ids:
+            raise ValueError(f"Duplicate run_id across artifacts: {run_id!r}")
+        run_ids.add(run_id)
 
-    grouped = (
-        df.groupby(group_keys, as_index=False)
-        .agg(
-            best_mean=("best_test_accuracy", "mean"),
-            best_std=("best_test_accuracy", "std"),
-            best_n=("best_test_accuracy", "count"),
-            final_mean=("final_test_accuracy", "mean"),
-            final_std=("final_test_accuracy", "std"),
-            final_n=("final_test_accuracy", "count"),
+        effective_config = deepcopy(artifact["effective_config"])
+        run_config = effective_config.pop("run")
+        validate_protocol_config(effective_config)
+        if run_config["method"] not in effective_config["experiment"]["methods"]:
+            raise ValueError(
+                f"Artifact {run_id!r} uses unconfigured method {run_config['method']!r}"
+            )
+        if run_config["replicate_seed"] not in effective_config["experiment"]["replicate_seeds"]:
+            raise ValueError(
+                f"Artifact {run_id!r} uses unconfigured seed {run_config['replicate_seed']!r}"
+            )
+        if run_config["framework"] != effective_config["evaluation"]["framework"]:
+            raise ValueError(
+                f"Artifact {run_id!r} framework {run_config['framework']!r} disagrees "
+                "with the configured evaluation framework"
+            )
+        expected_source_digest = config_digest(effective_config)
+        source_digests.add(expected_source_digest)
+        if source_config is None:
+            source_config = effective_config
+        artifacts.append(artifact)
+
+    if len(source_digests) != 1:
+        raise ValueError(
+            "Artifacts from different source configurations cannot be aggregated together"
         )
-        .sort_values([k for k in ["framework", "budget", "method"] if k in group_keys])
+    if source_config is None:  # pragma: no cover - guarded by artifact_paths
+        raise RuntimeError("Artifact loading produced no source configuration")
+    return artifacts, source_config
+
+
+def build_round_metrics(artifacts: Sequence[dict[str, Any]]) -> pd.DataFrame:
+    """Flatten validated artifacts into one deterministic row per model fit."""
+    rows: list[dict[str, Any]] = []
+    seen_keys: set[tuple[str, str, str, int, int]] = set()
+
+    for artifact in artifacts:
+        rounds = artifact["rounds"]
+        selector_seconds = artifact["timings"]["selector_seconds"]
+        if len(rounds) != len(selector_seconds):
+            raise ValueError(
+                f"Artifact {artifact['run_id']!r} has inconsistent round timing cardinality"
+            )
+
+        for round_result, selection_seconds in zip(rounds, selector_seconds, strict=True):
+            logical_key = (
+                str(artifact["effective_config"]["data"]["name"]),
+                str(artifact["effective_config"]["run"]["framework"]),
+                str(artifact["effective_config"]["run"]["method"]),
+                int(artifact["effective_config"]["run"]["replicate_seed"]),
+                int(round_result["cumulative_budget"]),
+            )
+            if logical_key in seen_keys:
+                raise ValueError(
+                    "Duplicate protocol result for "
+                    f"dataset/framework/method/seed/budget={logical_key!r}"
+                )
+            seen_keys.add(logical_key)
+
+            diagnostics = round_result["selection_diagnostics"]
+            effective_config = deepcopy(artifact["effective_config"])
+            run_config = effective_config.pop("run")
+            rows.append(
+                {
+                    "protocol_version": artifact["protocol_version"],
+                    "source_config_digest": config_digest(effective_config),
+                    "run_id": artifact["run_id"],
+                    "config_digest": artifact["config_digest"],
+                    "dataset": effective_config["data"]["name"],
+                    "framework": run_config["framework"],
+                    "method": run_config["method"],
+                    "replicate_seed": run_config["replicate_seed"],
+                    "round": round_result["round"],
+                    "query_size": round_result["query_size"],
+                    "cumulative_budget": round_result["cumulative_budget"],
+                    "trained_epochs": round_result["trained_epochs"],
+                    "test_loss": round_result["test_loss"],
+                    "test_accuracy": round_result["test_accuracy"],
+                    "nearest_distance_mean": diagnostics["nearest_distance_mean"],
+                    "nearest_distance_p95": diagnostics["nearest_distance_p95"],
+                    "nearest_distance_max": diagnostics["nearest_distance_max"],
+                    "selected_pairwise_cosine_mean": diagnostics["selected_pairwise_cosine_mean"],
+                    "selected_typicality_mean": diagnostics["selected_typicality_mean"],
+                    "selector_seconds": selection_seconds,
+                    "new_indices_json": canonical_json(round_result["new_indices"]),
+                    "selected_indices_json": canonical_json(round_result["selected_indices"]),
+                    "method_metadata_json": canonical_json(round_result["method_metadata"]),
+                }
+            )
+
+    if not rows:
+        raise ValueError("Canonical artifacts contain no completed rounds")
+    return (
+        pd.DataFrame(rows, columns=ROUND_REPORT_COLUMNS)
+        .sort_values(ROUND_SORT_COLUMNS, kind="stable")
+        .reset_index(drop=True)
     )
 
-    grouped["best_std"] = grouped["best_std"].fillna(0.0)
-    grouped["final_std"] = grouped["final_std"].fillna(0.0)
 
-    grouped["best_se"] = grouped["best_std"] / grouped["best_n"].pow(0.5)
-    grouped["final_se"] = grouped["final_std"] / grouped["final_n"].pow(0.5)
+def build_summary_metrics(round_metrics: pd.DataFrame) -> pd.DataFrame:
+    """Summarise replicates while keeping datasets and frameworks separate."""
+    required = set(ROUND_REPORT_COLUMNS)
+    missing = sorted(required - set(round_metrics.columns))
+    if missing:
+        raise ValueError(f"Round metrics are missing required columns: {missing}")
 
-    grouped["best_ci95"] = 1.96 * grouped["best_se"]
-    grouped["final_ci95"] = 1.96 * grouped["final_se"]
-
-    grouped["best_mean_pm_std"] = grouped.apply(
-        lambda row: format_mean_std(float(row["best_mean"]), float(row["best_std"])),
-        axis=1,
+    group_columns = ["dataset", "framework", "method", "cumulative_budget"]
+    summary = (
+        round_metrics.groupby(group_columns, as_index=False, sort=True)
+        .agg(
+            accuracy_mean=("test_accuracy", "mean"),
+            accuracy_std=("test_accuracy", "std"),
+            replicate_count=("test_accuracy", "count"),
+            nearest_distance_mean=("nearest_distance_mean", "mean"),
+            nearest_distance_p95_mean=("nearest_distance_p95", "mean"),
+            nearest_distance_max_mean=("nearest_distance_max", "mean"),
+            selected_pairwise_cosine_mean=("selected_pairwise_cosine_mean", "mean"),
+            selected_typicality_mean=("selected_typicality_mean", "mean"),
+            selector_seconds_mean=("selector_seconds", "mean"),
+        )
+        .sort_values(group_columns, kind="stable")
+        .reset_index(drop=True)
     )
-    grouped["final_mean_pm_std"] = grouped.apply(
-        lambda row: format_mean_std(float(row["final_mean"]), float(row["final_std"])),
-        axis=1,
+    return summary.loc[:, SUMMARY_COLUMNS]
+
+
+def atomic_write_csv(frame: pd.DataFrame, path: Path) -> None:
+    """Write a stable CSV without exposing a partially written report."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        frame.to_csv(
+            temporary_path,
+            index=False,
+            float_format="%.17g",
+            lineterminator="\n",
+        )
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def write_protocol_reports(root: Path) -> dict[str, Path]:
+    """Validate canonical artifacts and write round and summary report tables."""
+    artifacts, _ = load_validated_artifacts(root)
+    round_metrics = build_round_metrics(artifacts)
+    summary_metrics = build_summary_metrics(round_metrics)
+    report_dir = root / "reports"
+    paths = {
+        "round_metrics": report_dir / "round_metrics.csv",
+        "summary_metrics": report_dir / "summary_metrics.csv",
+    }
+    atomic_write_csv(round_metrics, paths["round_metrics"])
+    atomic_write_csv(summary_metrics, paths["summary_metrics"])
+    return paths
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=Path("results/protocol_v2"),
+        help="Protocol artifact root containing runs/ (default: results/protocol_v2)",
     )
-    return grouped
-
-
-def _write_pivots(df: pd.DataFrame, output_dir: Path, stem: str) -> None:
-    index_cols: list[str] = ["method"]
-    if "framework" in df.columns:
-        index_cols = ["framework", "method"]
-
-    best_pivot = (
-        df.pivot(index=index_cols, columns="budget", values="best_mean_pm_std")
-        .sort_index()
-        .sort_index(axis=1)
-    )
-    final_pivot = (
-        df.pivot(index=index_cols, columns="budget", values="final_mean_pm_std")
-        .sort_index()
-        .sort_index(axis=1)
-    )
-
-    best_path = output_dir / f"{stem}_pivot_best.csv"
-    final_path = output_dir / f"{stem}_pivot_final.csv"
-    best_pivot.to_csv(best_path)
-    final_pivot.to_csv(final_path)
-    print(f"Saved pivot (best) to: {best_path}")
-    print(f"Saved pivot (final) to: {final_path}")
-
-
-def print_latex_rows(df: pd.DataFrame, title: str) -> None:
-    print(f"\nLaTeX-ready rows ({title}, best accuracy mean ± std):")
-    if df.empty:
-        print("No rows.")
-        return
-
-    budgets = sorted(df["budget"].unique().tolist())
-    if "framework" in df.columns:
-        for framework in sorted(df["framework"].unique().tolist()):
-            sub = df[df["framework"] == framework]
-            print(f"% framework: {framework}")
-            for method in sorted(sub["method"].unique().tolist()):
-                method_row = sub[sub["method"] == method].set_index("budget")
-                vals = [method_row.loc[b, "best_mean_pm_std"] if b in method_row.index else "--" for b in budgets]
-                print(" & ".join([method] + vals) + r" \\")
-    else:
-        for method in sorted(df["method"].unique().tolist()):
-            method_row = df[df["method"] == method].set_index("budget")
-            vals = [method_row.loc[b, "best_mean_pm_std"] if b in method_row.index else "--" for b in budgets]
-            print(" & ".join([method] + vals) + r" \\")
+    return parser.parse_args()
 
 
 def main() -> None:
-    """Aggregate metrics with SE/CI, save subsets/pivots, and print LaTeX-ready rows."""
-    metrics_path = Path("results/metrics/metrics.csv")
-    output_dir = Path("results/metrics")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    if not metrics_path.exists():
-        raise FileNotFoundError(f"Could not find metrics file at {metrics_path}")
-
-    try:
-        df = pd.read_csv(metrics_path)
-    except EmptyDataError as exc:
-        raise ValueError(
-            f"Metrics file exists but is empty: {metrics_path}. Run experiments first to generate rows."
-        ) from exc
-
-    required = {"method", "budget", "seed", "best_test_accuracy", "final_test_accuracy"}
-    missing = required - set(df.columns)
-    if missing:
-        raise ValueError(f"Metrics CSV is missing required columns: {missing}")
-
-    df = dedupe(df)
-    agg = _aggregate_metrics(df)
-
-    all_path = output_dir / "aggregated_metrics.csv"
-    agg.to_csv(all_path, index=False)
-    print(f"Saved aggregated metrics to: {all_path}")
-
-    agg_main = agg[agg["method"].isin(MAIN_METHODS)].copy()
-    main_path = output_dir / "aggregated_metrics_main.csv"
-    agg_main.to_csv(main_path, index=False)
-    print(f"Saved main-methods aggregate to: {main_path}")
-
-    agg_mod = agg[agg["method"].isin(MOD_METHODS)].copy()
-    mod_path = output_dir / "aggregated_metrics_modification.csv"
-    agg_mod.to_csv(mod_path, index=False)
-    print(f"Saved modification aggregate to: {mod_path}")
-
-    _write_pivots(agg, output_dir, "aggregated_metrics")
-    _write_pivots(agg_main, output_dir, "aggregated_metrics_main")
-    _write_pivots(agg_mod, output_dir, "aggregated_metrics_modification")
-
-    print_latex_rows(agg_main, "main methods")
-    print_latex_rows(agg_mod, "modification methods")
+    paths = write_protocol_reports(parse_args().root)
+    for label, path in paths.items():
+        print(f"Wrote {label}: {path}")
 
 
 if __name__ == "__main__":

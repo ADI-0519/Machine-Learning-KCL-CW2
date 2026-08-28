@@ -20,9 +20,11 @@ simclr:
 
 selection:
   knn_k: 20
-  budgets: [10, 20, 50, 100, 200]
+  round_query_sizes: [10, 10, 10, 10, 10]
   clustering: "kmeans"
   modified_alpha: 0.7
+  max_clusters: 500
+  min_cluster_size: 5
 
 classifier:
   backbone: "resnet18"
@@ -33,12 +35,10 @@ classifier:
   weight_decay: 0.0005
 
 experiment:
-  frameworks: ["fully_supervised", "ssl_embedding", "semi_supervised"]
-  methods: ["kcenter", "uncertainty", "margin","entropy", "dbal","bald", "badge","random", "tpcrand", "tpcrp", "tpcinv", "tpcnoclust", "tpcrp_ccfl"]
+  frameworks: ["fully_supervised", "ssl_embedding", "label_spreading_proxy"]
+  methods: ["kcenter", "uncertainty", "margin", "entropy", "dbal_proxy", "bald_proxy", "badge_proxy", "random", "tpcrand", "tpcrp", "tpcinv", "tpcnoclust", "tpcrp_ccfl"]
   seeds: [42,43,44]
-  iterative_rounds: 2
-  initial_labeled: 0
-  max_clusters: 500
-  min_cluster_size: 5
+  ccfl_candidates_per_cluster: 5
+  ccfl_refine_steps: 1
   mc_passes: 10
   mc_dropout_p: 0.2

@@ -1,0 +1,22 @@
+{
+  "description": "Deterministic greedy-coverage fixture evaluated with the official ProbCover selection procedure.",
+  "source": {
+    "commit": "4097a71c348f60492ab22be0c4c9da224e637af6",
+    "path": "deep-al/pycls/al/prob_cover.py",
+    "repository": "https://github.com/avihu111/TypiClust"
+  },
+  "embeddings": [
+    [0.0],
+    [0.1],
+    [1.0],
+    [1.1],
+    [3.0],
+    [3.1]
+  ],
+  "pool_indices": [1, 2, 3, 4, 5],
+  "labeled_indices": [0],
+  "query_size": 2,
+  "delta": 0.25,
+  "expected_selected_indices": [2, 4],
+  "expected_covered_counts": [2, 4, 6]
+}

@@ -1,10 +1,13 @@
 *.pt
 .env
 /.venv/
+*.egg-info/
 __pycache__/
 .pytest_cache/
+.coverage
 venv/
 .vscode/
 results/embeddings/
 results/selections/
+results/checkpoints/
 data/

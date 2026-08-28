@@ -18,7 +18,7 @@ def build_cifar_resnet18(num_classes: int | None = None) -> nn.Module:
 
 
 class ResNet18Encoder(nn.Module):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         backbone = build_cifar_resnet18()
         in_features = backbone.fc.in_features
@@ -31,7 +31,7 @@ class ResNet18Encoder(nn.Module):
 
 
 class ProjectionHead(nn.Module):
-    def __init__(self, in_dim, proj_dim = 128):
+    def __init__(self, in_dim: int, proj_dim: int = 128) -> None:
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, in_dim, bias=False),
@@ -46,12 +46,12 @@ class ProjectionHead(nn.Module):
 
 
 class SimCLRModel(nn.Module):
-    def __init__(self, proj_dim = 128):
+    def __init__(self, proj_dim: int = 128) -> None:
         super().__init__()
         self.encoder = ResNet18Encoder()
         self.projector = ProjectionHead(self.encoder.output_dim, proj_dim)
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         features = self.encoder(x)
         projections = self.projector(features)
         return features, projections

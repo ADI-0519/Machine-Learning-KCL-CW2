@@ -1,151 +1,95 @@
+"""Plot framework-separated protocol results with explicit variability bands."""
+
 from __future__ import annotations
 
+import argparse
+import re
 from pathlib import Path
-from typing import Sequence
 
 import matplotlib
-import pandas as pd
-from pandas.errors import EmptyDataError
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-ABLATION_METHODS = ["random", "tpcrand", "tpcrp", "tpcinv", "tpcnoclust"]
-MODIFICATION_METHODS = ["tpcrp", "tpcrp_ccfl"]
-SECONDARY_METHODS = ["kcenter", "uncertainty", "margin", "entropy", "dbal", "bald", "badge"]
+from scripts.aggregate_results import (
+    build_round_metrics,
+    build_summary_metrics,
+    load_validated_artifacts,
+)
 
-def build_global_df_from_raw_metrics(metrics_path: Path) -> pd.DataFrame:
-    """Recompute pooled method/budget means and SEs from raw metrics, not from already-aggregated framework rows."""
-    if not metrics_path.exists():
-        raise FileNotFoundError(f"Could not find raw metrics file at {metrics_path}")
 
-    raw_df = pd.read_csv(metrics_path)
+def _filename_component(value: str) -> str:
+    component = re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._")
+    if not component:
+        raise ValueError(f"Cannot create a safe plot filename from {value!r}")
+    return component
 
-    required_cols = {"method", "budget", "seed", "best_test_accuracy"}
-    missing = required_cols - set(raw_df.columns)
-    if missing:
-        raise ValueError(f"Raw metrics CSV is missing required columns: {missing}")
 
-    dedup_keys = ["method", "budget", "seed"]
-    if "framework" in raw_df.columns:
-        dedup_keys = ["framework"] + dedup_keys
-    raw_df = raw_df.drop_duplicates(subset=dedup_keys, keep="last")
-
-    global_df = (
-        raw_df.groupby(["method", "budget"], as_index=False)
-        .agg(
-            best_mean=("best_test_accuracy", "mean"),
-            best_std=("best_test_accuracy", "std"),
-            best_n=("best_test_accuracy", "count"),
+def write_protocol_plots(root: Path) -> list[Path]:
+    """Write one accuracy plot per dataset/framework; frameworks are never pooled."""
+    artifacts, _ = load_validated_artifacts(root)
+    summary = build_summary_metrics(build_round_metrics(artifacts))
+    insufficient = summary[summary["replicate_count"] < 2]
+    if not insufficient.empty:
+        keys = insufficient[
+            ["dataset", "framework", "method", "cumulative_budget", "replicate_count"]
+        ]
+        raise ValueError(
+            "Standard-deviation bands require at least two replicates per plotted point: "
+            f"{keys.to_dict(orient='records')}"
         )
-        .sort_values(["budget", "method"])
-        .reset_index(drop=True)
+    output_dir = root / "reports" / "plots"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_paths: list[Path] = []
+
+    for (dataset, framework), group in summary.groupby(["dataset", "framework"], sort=True):
+        figure, axis = plt.subplots(figsize=(7.2, 4.4))
+        for method in sorted(group["method"].unique()):
+            method_rows = group[group["method"] == method].sort_values("cumulative_budget")
+            budgets = method_rows["cumulative_budget"].to_numpy(dtype=int)
+            accuracy = method_rows["accuracy_mean"].to_numpy(dtype=float) * 100.0
+            deviation = method_rows["accuracy_std"].to_numpy(dtype=float) * 100.0
+            axis.plot(budgets, accuracy, marker="o", linewidth=2.0, label=method)
+            axis.fill_between(
+                budgets,
+                accuracy - deviation,
+                accuracy + deviation,
+                alpha=0.18,
+            )
+
+        axis.set_xlabel("Cumulative label budget")
+        axis.set_ylabel("Test accuracy (%) with ±1 SD bands")
+        axis.set_title(f"{dataset} — {framework}")
+        axis.grid(alpha=0.30)
+        axis.legend()
+        figure.tight_layout()
+        output_path = output_dir / (
+            f"accuracy_{_filename_component(str(dataset))}_"
+            f"{_filename_component(str(framework))}.png"
+        )
+        figure.savefig(output_path, dpi=300, bbox_inches="tight")
+        plt.close(figure)
+        output_paths.append(output_path)
+
+    if not output_paths:
+        raise ValueError("No dataset/framework groups were available for plotting")
+    return output_paths
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=Path("results/protocol_v2"),
+        help="Protocol artifact root containing runs/ (default: results/protocol_v2)",
     )
-
-    global_df["best_std"] = global_df["best_std"].fillna(0.0)
-    global_df["best_se"] = global_df["best_std"] / global_df["best_n"].pow(0.5)
-    return global_df
-
-def plot_group(df: pd.DataFrame,methods: Sequence[str],output_path: Path,title: str) -> None:
-    """Plot mean best accuracy with standard-error bands for a selected method group."""
-    plot_df = df[df["method"].isin(methods)].copy()
-    if plot_df.empty:
-        print(f"Skipping {output_path.name}: no rows for methods {list(methods)}")
-        return
-
-    plt.figure(figsize=(7.2, 4.4))
-    for method in methods:
-        method_df = plot_df[plot_df["method"] == method].sort_values("budget")
-        if method_df.empty:
-            continue
-        x = method_df["budget"].to_numpy()
-        y = (method_df["best_mean"] * 100).to_numpy()
-        se = (method_df["best_se"] * 100).to_numpy()
-        plt.plot(x, y, marker="o", linewidth=2.0, label=method)
-        plt.fill_between(x, y - se, y + se, alpha=0.18)
-
-    plt.xlabel("Budget")
-    plt.ylabel("Best Test Accuracy (%)")
-    plt.title(title)
-    plt.grid(alpha=0.30)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close()
-    print(f"Saved plot to: {output_path}")
+    return parser.parse_args()
 
 
 def main() -> None:
-    """Create ablation, modification, and secondary-baseline plots from aggregated metrics."""
-    aggregated_path = Path("results/metrics/aggregated_metrics.csv")
-    output_dir = Path("results/plots")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    if not aggregated_path.exists():
-        raise FileNotFoundError(
-            f"Could not find aggregated metrics at {aggregated_path}. Run scripts/aggregate_results.py first."
-        )
-
-    try:
-        df = pd.read_csv(aggregated_path)
-    except EmptyDataError as exc:
-        raise ValueError(
-            f"Aggregated metrics file exists but is empty: {aggregated_path}. "
-            "Run scripts/aggregate_results.py after experiments."
-        ) from exc
-
-    required_cols = {"method", "budget", "best_mean", "best_se"}
-    missing = required_cols - set(df.columns)
-    if missing:
-        raise ValueError(f"Aggregated CSV is missing required columns: {missing}")
-
-
-    metrics_path = Path("results/metrics/metrics.csv")
-    try:
-        global_df = build_global_df_from_raw_metrics(metrics_path)
-        plot_group(
-            df=global_df,
-            methods=ABLATION_METHODS,
-            output_path=output_dir / "ablation_plot_all_frameworks.png",
-            title="Ablation Plot (All Frameworks)",
-        )
-        plot_group(
-            df=global_df,
-            methods=MODIFICATION_METHODS,
-            output_path=output_dir / "modification_plot_all_frameworks.png",
-            title="Modification Plot (All Frameworks)",
-        )
-        plot_group(
-            df=global_df,
-            methods=SECONDARY_METHODS,
-            output_path=output_dir / "secondary_baselines_plot_all_frameworks.png",
-            title="Secondary Baselines (All Frameworks)",
-        )
-    except FileNotFoundError:
-        print("Skipping all-framework plots: raw metrics.csv not found.")
-
-    # Per-framework plots when the column exists.
-    if "framework" in df.columns:
-        for framework in sorted(df["framework"].unique().tolist()):
-            fw_df = df[df["framework"] == framework].copy()
-            plot_group(
-                df=fw_df,
-                methods=ABLATION_METHODS,
-                output_path=output_dir / f"ablation_plot_{framework}.png",
-                title=f"Ablation Plot ({framework})",
-            )
-            plot_group(
-                df=fw_df,
-                methods=MODIFICATION_METHODS,
-                output_path=output_dir / f"modification_plot_{framework}.png",
-                title=f"Modification Plot ({framework})",
-            )
-            plot_group(
-                df=fw_df,
-                methods=SECONDARY_METHODS,
-                output_path=output_dir / f"secondary_baselines_plot_{framework}.png",
-                title=f"Secondary Baselines ({framework})",
-            )
+    for path in write_protocol_plots(parse_args().root):
+        print(f"Wrote plot: {path}")
 
 
 if __name__ == "__main__":

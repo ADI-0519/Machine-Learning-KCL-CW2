@@ -199,6 +199,15 @@ run JSON, and compare canonical outputs for equality.
 
 ## Phase 8 — Pilot and confirmation
 
+- [x] **T054A** Harden pre-run evidence: require exact config digests, endpoint,
+  seed sets, clean uniform environments, checkpoint provenance, configured
+  artifact schedules/epochs/seeds, and mechanistically correct ablation
+  contrasts.
+- [x] **T054B** Make SimCLR checkpoint creation final-epoch, atomic,
+  overwrite-safe, and accompanied by a code/config/checksum manifest.
+- [ ] **T054C** Train SimCLR once from a clean commit, insert its SHA-256 into
+  both SimCLR protocol configs, enforce it in the loader, and re-freeze the
+  pilot and confirmation config digests.
 - [ ] **T055** Freeze the Gate-B config digest and record it in
   `configs/protocol_v2_pilot.yaml` documentation.
 - [ ] **T056** Run the five-seed CIFAR-10 frozen-embedding pilot for TypiClust and
@@ -207,7 +216,7 @@ run JSON, and compare canonical outputs for equality.
   changing thresholds or the primary endpoint.
 - [ ] **T058** If Gate B passes, run all five faithful methods and CCFL ablations
   under the locked pilot protocol.
-- [ ] **T059** Create `configs/protocol_v2_confirmation.yaml` by extending the
+- [x] **T059** Create `configs/protocol_v2_confirmation.yaml` by extending the
   replicate seed list to ten without changing method behavior or endpoints.
 - [ ] **T060** Run Gate-C confirmation and generate `cv_evidence.json`.
 

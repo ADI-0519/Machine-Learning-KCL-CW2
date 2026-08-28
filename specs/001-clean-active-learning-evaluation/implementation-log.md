@@ -197,3 +197,35 @@ No CIFAR training was launched, no protocol-v2 report was created in `results/`,
 and no empirical or CV performance claim is authorized. Phase 8 begins by
 creating or supplying the locked representation checkpoint, then executing the
 pilot artifacts before any evidence generator is run on real results.
+
+## 2026-08-28 — Phase 8 pre-run hardening
+
+- Made artifact validation cross-check the complete validated source config,
+  configured round schedule, fixed epoch count, recomputed component seeds,
+  CIFAR train-index bounds, representation path, and DINOv2 digest.
+- Made Gate B require the exact frozen pilot config, seeds 42–46, budget 10,
+  and one identical clean execution environment and checkpoint across all
+  primary-pair artifacts.
+- Locked final bullet evidence to the exact SimCLR/DINOv2 source-config
+  digests, seeds 42–51, CIFAR-10 budget 10, and uniform per-grid provenance.
+- Corrected component analysis to compare unweighted refinement against the
+  candidate-only control, and full CCFL against unweighted refinement.
+- Shared selector randomness across TypiClust and all CCFL variants so cluster
+  tie-breaking and small-cluster fallbacks cannot confound component contrasts;
+  unrelated method families retain independent selector streams.
+- Changed SimCLR checkpointing from best observed training loss to the fixed
+  final epoch. Writes are atomic, refuse accidental overwrite, require a clean
+  Git worktree, and emit a manifest with Git/config/checkpoint digests.
+- Reduced the Gate-B pilot acquisition schedule to its declared budgets 10 and
+  20; confirmation remains the five-budget trajectory.
+- Added synthetic checkpoint-training and fail-closed provenance regression
+  tests. No CIFAR data was downloaded and no representation or benchmark result
+  was produced.
+- Verification: `207 passed`; overall statement coverage increased to `81%`,
+  with `scripts.train_simclr` and `src.simclr` both at `90%+`. Configured and
+  broad Ruff checks, Ruff formatting, compilation, dependency checks, three
+  config dry-runs, CUDA SimCLR forward/backward, and `git diff --check` passed.
+
+The remaining pre-pilot action is T054C: create the real SimCLR checkpoint,
+insert and enforce its SHA-256, then update the two affected frozen config
+digests before committing the final experiment definition.

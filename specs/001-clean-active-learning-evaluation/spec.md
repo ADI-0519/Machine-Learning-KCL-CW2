@@ -1,7 +1,7 @@
 # Feature Specification: Deterministic Active-Learning Evaluation
 
 **Feature ID:** `001-clean-active-learning-evaluation`  
-**Status:** Draft for implementation  
+**Status:** Implemented through pre-run hardening; empirical gates pending
 **Created:** 2026-08-27  
 **Scope owner:** Repository maintainer
 
@@ -26,17 +26,19 @@ The completed system must answer four questions without manual reconstruction:
 
 ## 2. Non-goals
 
-The first implementation MUST NOT include:
+The claim-producing benchmark MUST NOT include:
 
 - FlexMatch or another expensive semi-supervised trainer.
-- DINOv2, DCoM, or Uncertainty Herding.
+- DCoM or Uncertainty Herding in the locked primary comparison.
 - Distributed multi-node execution.
 - A claim of state-of-the-art performance.
 - Migration or reinterpretation of the existing `best_test_accuracy` results as
   clean protocol results.
 
-These may be separate follow-up features after the deterministic CIFAR-10
-frozen-embedding benchmark passes its decision gate.
+FlexMatch and recent selection baselines may be separate follow-up features
+after the deterministic CIFAR-10 frozen-embedding benchmark passes its decision
+gate. DINOv2 is admitted only as a separately reported representation-robustness
+validation and MUST NOT be pooled into the primary SimCLR estimate.
 
 ## 3. Definitions
 
@@ -92,8 +94,10 @@ durations.
    produce identical selected indices and scalar metrics within `1e-8` on CPU.
 2. Given TypiClust and CCFL with the same replicate, both receive the same
    clustering and training seeds for a round.
-3. Given two different methods, method-specific selector randomness does not
-   advance or alter the shared clustering/training RNG streams.
+3. Given different method families, family-specific selector randomness does
+   not advance or alter the shared clustering/training RNG streams. TypiClust
+   and its CCFL component ablations deliberately share selector randomness so
+   their contrasts isolate algorithmic components rather than tie-breaking.
 
 ### US3 — Immutable, resumable result artifacts (P1)
 
@@ -216,8 +220,10 @@ on small deterministic subsets of both CIFAR-10 and CIFAR-100.
 - **FR-011:** Component seeds MUST be derived with a stable cryptographic hash,
   never Python's process-randomized `hash()`.
 - **FR-012:** Shared paired components MUST receive method-independent seeds.
-- **FR-013:** Method-specific stochastic operations MUST receive a separate
-  method-dependent selector seed.
+- **FR-013:** Stochastic operations MUST receive a separate selector seed.
+  TypiClust, full CCFL, and CCFL component ablations MUST share one selector
+  seed within a paired replicate; unrelated method families MUST use distinct
+  selector seeds.
 - **FR-014:** Strict mode MUST enable PyTorch deterministic algorithms and
   disable cuDNN benchmarking.
 - **FR-015:** Documentation MUST state that bitwise reproducibility is guaranteed
@@ -427,7 +433,9 @@ produced before this gate may be used in the new report or CV.
 
 ### Gate B — Five-seed CIFAR-10 pilot
 
-Run frozen-embedding TypiClust and CCFL with cumulative budgets 10 and 20.
+Run frozen-embedding TypiClust and CCFL through the predeclared cumulative
+budgets 10 and 20. The decision is made only at the primary budget of 10;
+budget 20 is descriptive and cannot change the gate outcome.
 Proceed when all conditions hold at the predeclared primary budget:
 
 - Five valid paired seeds.

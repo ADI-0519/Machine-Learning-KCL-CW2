@@ -116,6 +116,25 @@ def load_validated_artifacts(root: Path) -> tuple[list[dict[str, Any]], dict[str
     return artifacts, source_config
 
 
+def require_uniform_environment(
+    artifacts: Sequence[dict[str, Any]],
+    *,
+    context: str,
+) -> dict[str, Any]:
+    """Return one clean environment shared exactly by every supplied artifact."""
+    if not artifacts:
+        raise ValueError(f"{context} contains no artifacts")
+    environments = {
+        canonical_json(artifact["environment"]): artifact["environment"] for artifact in artifacts
+    }
+    if len(environments) != 1:
+        raise ValueError(f"{context} must use one identical execution environment")
+    environment = next(iter(environments.values()))
+    if environment["git_dirty"]:
+        raise ValueError(f"{context} artifacts must come from a clean Git worktree")
+    return environment
+
+
 def build_round_metrics(artifacts: Sequence[dict[str, Any]]) -> pd.DataFrame:
     """Flatten validated artifacts into one deterministic row per model fit."""
     rows: list[dict[str, Any]] = []

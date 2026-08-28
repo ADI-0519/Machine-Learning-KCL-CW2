@@ -16,8 +16,8 @@ from typing import Any
 
 import torch
 
-from .config import CCFL_METHODS
-from .protocol import PROTOCOL_VERSION
+from .config import CCFL_METHODS, validate_protocol_config
+from .protocol import PROTOCOL_VERSION, SeedBundle
 
 ROOT_FIELDS = {
     "protocol_version",
@@ -226,12 +226,27 @@ def validate_artifact(payload: dict[str, Any]) -> None:
         raise ValueError("artifact run method must be a non-empty string")
     replicate_seed = _integer(run_config["replicate_seed"], "run replicate_seed")
 
+    source_config = deepcopy(payload["effective_config"])
+    source_config.pop("run")
+    validate_protocol_config(source_config)
+    if run_config["framework"] != source_config["evaluation"]["framework"]:
+        raise ValueError("artifact run framework disagrees with effective configuration")
+    if run_config["method"] not in source_config["experiment"]["methods"]:
+        raise ValueError("artifact run method is absent from effective configuration")
+    if replicate_seed not in source_config["experiment"]["replicate_seeds"]:
+        raise ValueError("artifact run replicate seed is absent from effective configuration")
+
     environment = payload["environment"]
     if not isinstance(environment, dict):
         raise ValueError("artifact environment must be an object")
     _require_exact_fields(environment, ENVIRONMENT_FIELDS, "environment")
-    if not isinstance(environment["git_commit"], str) or not environment["git_commit"]:
-        raise ValueError("artifact git_commit must be a non-empty string")
+    git_commit = environment["git_commit"]
+    if (
+        not isinstance(git_commit, str)
+        or len(git_commit) != 40
+        or any(character not in "0123456789abcdef" for character in git_commit)
+    ):
+        raise ValueError("artifact git_commit must be a lowercase 40-character Git SHA")
     if not isinstance(environment["git_dirty"], bool):
         raise ValueError("artifact git_dirty must be boolean")
     if not isinstance(environment["packages"], dict) or not environment["packages"]:
@@ -267,10 +282,30 @@ def validate_artifact(payload: dict[str, Any]) -> None:
         checkpoint_path is None or checkpoint_digest is None
     ):
         raise ValueError("artifact embedding framework requires checkpoint provenance")
+    representation = source_config["representation"]
+    configured_checkpoint = str(Path(representation["checkpoint_path"]).resolve())
+    if (
+        checkpoint_path is not None
+        and str(Path(checkpoint_path).resolve()) != configured_checkpoint
+    ):
+        raise ValueError("artifact checkpoint_path disagrees with effective configuration")
+    if (
+        representation["backend"] == "dinov2"
+        and checkpoint_digest != representation["weights_sha256"]
+    ):
+        raise ValueError("artifact DINOv2 checkpoint digest disagrees with effective configuration")
 
     rounds = payload["rounds"]
     if not isinstance(rounds, list) or not rounds:
         raise ValueError("artifact has no rounds")
+    expected_query_sizes = source_config["selection"]["round_query_sizes"]
+    if len(rounds) != len(expected_query_sizes):
+        raise ValueError("artifact round count disagrees with configured acquisition schedule")
+    expected_trained_epochs = (
+        1
+        if run_config["framework"] == "label_spreading_proxy"
+        else int(source_config["evaluation"]["epochs"])
+    )
     previous_selected: list[int] = []
     cumulative_budget = 0
     for expected_round, record in enumerate(rounds, start=1):
@@ -288,6 +323,10 @@ def validate_artifact(payload: dict[str, Any]) -> None:
             f"round {expected_round} query_size",
             minimum=1,
         )
+        if query_size != expected_query_sizes[expected_round - 1]:
+            raise ValueError(
+                f"artifact round {expected_round} query_size disagrees with configured schedule"
+            )
         new_indices = [
             _integer(index, f"round {expected_round} new index") for index in record["new_indices"]
         ]
@@ -295,6 +334,10 @@ def validate_artifact(payload: dict[str, Any]) -> None:
             _integer(index, f"round {expected_round} selected index")
             for index in record["selected_indices"]
         ]
+        if any(index >= 50_000 for index in (*new_indices, *selected_indices)):
+            raise ValueError(
+                f"artifact round {expected_round} contains an index outside CIFAR-10 train data"
+            )
         if len(new_indices) != query_size or len(set(new_indices)) != query_size:
             raise ValueError(f"artifact round {expected_round} has invalid new_indices")
         if set(previous_selected).intersection(new_indices):
@@ -322,7 +365,31 @@ def validate_artifact(payload: dict[str, Any]) -> None:
         for seed_name, seed_value in seeds.items():
             _integer(seed_value, f"round {expected_round} {seed_name} seed")
 
-        _integer(record["trained_epochs"], f"round {expected_round} trained_epochs", minimum=1)
+        expected_seeds = SeedBundle.for_round(
+            replicate=replicate_seed,
+            dataset=str(source_config["data"]["name"]),
+            framework=str(run_config["framework"]),
+            method=str(run_config["method"]),
+            round_id=expected_round,
+        )
+        if seeds != {
+            "replicate": expected_seeds.replicate,
+            "clustering": expected_seeds.clustering,
+            "selector": expected_seeds.selector,
+            "training": expected_seeds.training,
+            "dataloader": expected_seeds.dataloader,
+        }:
+            raise ValueError(f"artifact round {expected_round} component seeds are inconsistent")
+
+        trained_epochs = _integer(
+            record["trained_epochs"],
+            f"round {expected_round} trained_epochs",
+            minimum=1,
+        )
+        if trained_epochs != expected_trained_epochs:
+            raise ValueError(
+                f"artifact round {expected_round} trained_epochs disagrees with evaluation config"
+            )
         _finite_nonnegative(record["test_loss"], "test_loss")
         accuracy = _finite_nonnegative(record["test_accuracy"], "test_accuracy")
         if accuracy > 1.0:
@@ -457,6 +524,17 @@ def _git_output(*arguments: str) -> str:
     return completed.stdout.strip()
 
 
+def collect_git_state() -> dict[str, str | bool]:
+    """Return the current Git revision and whether the worktree is dirty."""
+    try:
+        return {
+            "git_commit": _git_output("rev-parse", "HEAD"),
+            "git_dirty": bool(_git_output("status", "--porcelain")),
+        }
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("cannot record Git provenance for protocol-v2 run") from exc
+
+
 def _required_package_version(package_name: str) -> str:
     try:
         return metadata.version(package_name)
@@ -470,11 +548,7 @@ def collect_environment(
     checkpoint_path: str | Path | None,
 ) -> dict[str, Any]:
     """Collect code, dependency, device, and checkpoint provenance for a run."""
-    try:
-        git_commit = _git_output("rev-parse", "HEAD")
-        git_dirty = bool(_git_output("status", "--porcelain"))
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError("cannot record Git provenance for protocol-v2 run") from exc
+    git_state = collect_git_state()
 
     package_names = (
         "huggingface-hub",
@@ -508,8 +582,8 @@ def collect_environment(
         device_name = platform.processor() or "cpu"
 
     return {
-        "git_commit": git_commit,
-        "git_dirty": git_dirty,
+        "git_commit": git_state["git_commit"],
+        "git_dirty": git_state["git_dirty"],
         "python_version": platform.python_version(),
         "platform": platform.platform(),
         "packages": packages,

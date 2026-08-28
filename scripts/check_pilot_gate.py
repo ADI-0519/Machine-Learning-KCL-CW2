@@ -8,29 +8,47 @@ from typing import Any
 
 import numpy as np
 
-from scripts.aggregate_results import build_round_metrics, load_validated_artifacts
+from scripts.aggregate_results import (
+    build_round_metrics,
+    load_validated_artifacts,
+    require_uniform_environment,
+)
 from scripts.generate_cv_evidence import generate_cv_evidence
-from src.artifacts import atomic_write_json
+from src.artifacts import atomic_write_json, config_digest
 from src.statistics import pair_method_rows
+
+PILOT_CONFIG_SHA256 = "3d022f2231f681d9b2e509d56be0812e9baea9355f529e365df5f58e1e12448e"
+PILOT_REPLICATE_SEEDS = [42, 43, 44, 45, 46]
+PRIMARY_BUDGET = 10
 
 
 def evaluate_pilot_gate(root: Path) -> dict[str, Any]:
     """Write and return the predeclared Gate-B checks for one pilot root."""
     evidence = generate_cv_evidence(root)
     artifacts, config = load_validated_artifacts(root)
+    source_digest = config_digest(config)
+    if source_digest != PILOT_CONFIG_SHA256:
+        raise ValueError(
+            "Gate B artifacts do not use the frozen pilot configuration: "
+            f"expected {PILOT_CONFIG_SHA256}, found {source_digest}"
+        )
+    environment = require_uniform_environment(artifacts, context="Gate B")
     configured_seeds = sorted(int(seed) for seed in config["experiment"]["replicate_seeds"])
-    if len(configured_seeds) != 5:
-        raise ValueError("Gate B requires exactly five configured replicate seeds")
+    if configured_seeds != PILOT_REPLICATE_SEEDS:
+        raise ValueError(
+            f"Gate B requires frozen replicate seeds {PILOT_REPLICATE_SEEDS}; "
+            f"found {configured_seeds}"
+        )
     comparison = config["experiment"]["primary_comparison"]
+    if int(comparison["cumulative_budget"]) != PRIMARY_BUDGET:
+        raise ValueError(f"Gate B primary endpoint must be cumulative budget {PRIMARY_BUDGET}")
     rows = build_round_metrics(artifacts)
     paired = pair_method_rows(
         rows,
         method_a=str(comparison["method_a"]),
         method_b=str(comparison["method_b"]),
     )
-    paired = paired.loc[
-        paired["cumulative_budget"] == int(comparison["cumulative_budget"])
-    ]
+    paired = paired.loc[paired["cumulative_budget"] == int(comparison["cumulative_budget"])]
     differences = paired["test_accuracy_a"].to_numpy(dtype=float) - paired[
         "test_accuracy_b"
     ].to_numpy(dtype=float)
@@ -45,6 +63,9 @@ def evaluate_pilot_gate(root: Path) -> dict[str, Any]:
     }
     decision = {
         "protocol_version": evidence["protocol_version"],
+        "source_config_sha256": source_digest,
+        "git_commit": environment["git_commit"],
+        "checkpoint_sha256": environment["checkpoint_sha256"],
         "primary_budget": evidence["primary_budget"],
         "paired_improvement_pp": evidence["paired_improvement_pp"],
         "wins": wins,

@@ -35,14 +35,14 @@ def test_seed_derivation_has_fixed_known_outputs() -> None:
     assert tpcrp == SeedBundle(
         replicate=42,
         clustering=824551655,
-        selector=826506532,
+        selector=934712551,
         training=1924623876,
         dataloader=200152058,
     )
     assert derive_seed(42, "cifar10", "ssl_embedding", 1, "clustering") == 824551655
 
 
-def test_paired_methods_share_nuisance_seeds_but_not_selector_seed() -> None:
+def test_typiclust_ablation_family_shares_all_nuisance_randomness() -> None:
     common = {
         "replicate": 42,
         "dataset": "cifar10",
@@ -51,11 +51,14 @@ def test_paired_methods_share_nuisance_seeds_but_not_selector_seed() -> None:
     }
     tpcrp = SeedBundle.for_round(method="tpcrp", **common)
     ccfl = SeedBundle.for_round(method="tpcrp_ccfl", **common)
+    unweighted = SeedBundle.for_round(method="ccfl_unweighted", **common)
+    random_method = SeedBundle.for_round(method="random", **common)
 
     assert tpcrp.clustering == ccfl.clustering
     assert tpcrp.training == ccfl.training
     assert tpcrp.dataloader == ccfl.dataloader
-    assert tpcrp.selector != ccfl.selector
+    assert tpcrp.selector == ccfl.selector == unweighted.selector
+    assert random_method.selector != tpcrp.selector
 
 
 def test_subset_loader_order_is_repeatable_and_seed_sensitive() -> None:

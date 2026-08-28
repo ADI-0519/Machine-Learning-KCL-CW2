@@ -12,6 +12,7 @@ import torch
 from PIL import Image
 from torch import nn
 
+import src.experiment as experiment
 from src.config import load_configurations, validate_protocol_config
 from src.models import SimCLRModel
 from src.representations import (
@@ -22,6 +23,30 @@ from src.representations import (
 )
 
 DINOV2_REVISION = "ed25f3a31f01632728cabb09d1542f84ab7b0056"
+
+
+def test_embedding_cache_is_written_atomically(monkeypatch, tmp_path) -> None:
+    expected = np.arange(12, dtype=np.float32).reshape(3, 4)
+    path = tmp_path / "embeddings.npy"
+    monkeypatch.setattr(experiment, "load_representation_encoder", lambda *_args: object())
+    monkeypatch.setattr(experiment, "build_embedding_loader", lambda **_kwargs: object())
+    monkeypatch.setattr(experiment, "build_embedding_transform", lambda _config: object())
+    monkeypatch.setattr(experiment, "grab_embeddings", lambda **_kwargs: expected)
+
+    actual = experiment.load_or_compute_embeddings(
+        embedding_path=path,
+        representation={"backend": "simclr"},
+        data_root="unused",
+        split="train",
+        batch_size=2,
+        num_workers=0,
+        device=torch.device("cpu"),
+        dataloader_seed=7,
+    )
+
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(np.load(path), expected)
+    assert list(tmp_path.glob(".*.tmp")) == []
 
 
 def _dinov2_config(checkpoint_path: Path, checkpoint_sha256: str) -> dict:
@@ -202,7 +227,7 @@ def test_load_dinov2_requires_local_config_and_transformers(tmp_path, monkeypatc
     digest = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
     representation = _dinov2_config(checkpoint_path, digest)["representation"]
 
-    with pytest.raises(FileNotFoundError, match="config.json"):
+    with pytest.raises(FileNotFoundError, match=r"config\.json"):
         load_representation_encoder(representation, torch.device("cpu"))
 
     (tmp_path / "config.json").write_text("{}", encoding="utf-8")

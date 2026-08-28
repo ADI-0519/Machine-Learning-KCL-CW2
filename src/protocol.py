@@ -12,6 +12,15 @@ import numpy as np
 
 PROTOCOL_VERSION = "2.0"
 TEST_POLICY = "once_after_fixed_epochs"
+TYPICLUST_SELECTOR_FAMILY = frozenset(
+    {
+        "tpcrp",
+        "tpcrp_ccfl",
+        "ccfl_candidate_only",
+        "ccfl_unweighted",
+        "ccfl_weighted",
+    }
+)
 
 
 def derive_seed(base_seed: int, *parts: object) -> int:
@@ -79,10 +88,11 @@ class SeedBundle:
     ) -> SeedBundle:
         """Create paired component seeds for a method and round."""
         shared = (dataset, framework, round_id)
+        selector_scope = "typiclust_family" if method in TYPICLUST_SELECTOR_FAMILY else method
         return cls(
             replicate=replicate,
             clustering=derive_seed(replicate, *shared, "clustering"),
-            selector=derive_seed(replicate, *shared, method, "selector"),
+            selector=derive_seed(replicate, *shared, selector_scope, "selector"),
             training=derive_seed(replicate, *shared, "training"),
             dataloader=derive_seed(replicate, *shared, "dataloader"),
         )

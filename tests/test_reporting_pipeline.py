@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import scripts.check_pilot_gate as pilot_gate_module
+import scripts.generate_bullet2_evidence as bullet2_module
 from scripts.aggregate_results import build_round_metrics, write_protocol_reports
 from scripts.check_pilot_gate import evaluate_pilot_gate
 from scripts.generate_bullet2_evidence import generate_bullet2_evidence
@@ -17,6 +19,7 @@ from src.artifacts import (
     atomic_write_json,
     build_effective_config,
     build_run_artifact,
+    config_digest,
     read_artifact,
 )
 from src.protocol import SeedBundle
@@ -124,6 +127,7 @@ def _write_synthetic_grid(
     written_methods: list[str] | None = None,
     configured_seeds: list[int] | None = None,
     representation_backend: str = "simclr",
+    primary_budget: int = 10,
 ) -> list[Path]:
     config = _protocol_config(root, representation_backend=representation_backend)
     _set_representation_backend(config, representation_backend)
@@ -131,6 +135,7 @@ def _write_synthetic_grid(
         config["experiment"]["methods"] = configured_methods
     if configured_seeds is not None:
         config["experiment"]["replicate_seeds"] = configured_seeds
+    config["experiment"]["primary_comparison"]["cumulative_budget"] = primary_budget
     methods_to_write = written_methods or config["experiment"]["methods"]
     replicate_count = len(config["experiment"]["replicate_seeds"])
     baseline_accuracy = 0.50 + 0.02 * np.arange(replicate_count)
@@ -221,7 +226,7 @@ def _write_synthetic_grid(
                     "cuda_runtime": None,
                     "deterministic_algorithms": True,
                     "cublas_workspace_config": None,
-                    "checkpoint_path": "synthetic.pt",
+                    "checkpoint_path": config["representation"]["checkpoint_path"],
                     "checkpoint_sha256": "b" * 64,
                 },
                 rounds=rounds,
@@ -235,6 +240,24 @@ def _write_synthetic_grid(
             atomic_write_json(path, artifact)
             written.append(path)
     return written
+
+
+def _source_config_sha256(path: Path) -> str:
+    source_config = dict(read_artifact(path)["effective_config"])
+    source_config.pop("run")
+    return config_digest(source_config)
+
+
+def _patch_bullet2_contract(
+    monkeypatch,
+    *,
+    simclr_path: Path,
+    dinov2_path: Path,
+    seeds: list[int],
+) -> None:
+    monkeypatch.setattr(bullet2_module, "SIMCLR_CONFIG_SHA256", _source_config_sha256(simclr_path))
+    monkeypatch.setattr(bullet2_module, "DINOV2_CONFIG_SHA256", _source_config_sha256(dinov2_path))
+    monkeypatch.setattr(bullet2_module, "CONFIRMATION_SEEDS", seeds)
 
 
 def test_aggregation_writes_deterministic_round_and_summary_tables(tmp_path) -> None:
@@ -278,22 +301,19 @@ def test_aggregation_rejects_duplicate_logical_rounds(tmp_path) -> None:
         build_round_metrics([artifact, artifact])
 
 
-def test_aggregation_rejects_run_dimensions_outside_source_config(tmp_path) -> None:
+def test_artifact_builder_rejects_run_dimensions_outside_source_config(tmp_path) -> None:
     root = tmp_path / "protocol_v2"
     paths = _write_synthetic_grid(root)
     artifact = read_artifact(paths[0])
     effective_config = artifact["effective_config"]
     effective_config["run"]["method"] = "random"
-    invalid = build_run_artifact(
-        effective_config=effective_config,
-        environment=artifact["environment"],
-        rounds=artifact["rounds"],
-        timings=artifact["timings"],
-    )
-    atomic_write_json(root / "runs" / f"{invalid['run_id']}.json", invalid)
-
-    with pytest.raises(ValueError, match="uses unconfigured method 'random'"):
-        write_protocol_reports(root)
+    with pytest.raises(ValueError, match="method is absent from effective configuration"):
+        build_run_artifact(
+            effective_config=effective_config,
+            environment=artifact["environment"],
+            rounds=artifact["rounds"],
+            timings=artifact["timings"],
+        )
 
 
 def test_statistics_use_paired_replicates_and_holm_adjustment(tmp_path) -> None:
@@ -381,13 +401,15 @@ def test_cv_evidence_supports_primary_first_gate_before_larger_grid(tmp_path) ->
     assert len(evidence["run_ids"]) == 10
 
 
-def test_pilot_gate_is_computed_from_five_primary_pairs(tmp_path) -> None:
+def test_pilot_gate_is_computed_from_five_primary_pairs(monkeypatch, tmp_path) -> None:
     root = tmp_path / "protocol_v2"
-    _write_synthetic_grid(
+    paths = _write_synthetic_grid(
         root,
         configured_methods=["random", "tpcrp", "tpcrp_ccfl"],
         written_methods=["tpcrp", "tpcrp_ccfl"],
     )
+    monkeypatch.setattr(pilot_gate_module, "PILOT_CONFIG_SHA256", _source_config_sha256(paths[0]))
+    monkeypatch.setattr(pilot_gate_module, "PILOT_REPLICATE_SEEDS", [1, 2, 3, 4, 5])
 
     decision = evaluate_pilot_gate(root)
 
@@ -397,6 +419,23 @@ def test_pilot_gate_is_computed_from_five_primary_pairs(tmp_path) -> None:
     assert all(decision["checks"].values())
     persisted = json.loads((root / "reports" / "pilot_gate.json").read_text("utf-8"))
     assert persisted == decision
+
+
+def test_pilot_gate_rejects_mixed_execution_environments(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "protocol_v2"
+    paths = _write_synthetic_grid(
+        root,
+        configured_methods=["random", "tpcrp", "tpcrp_ccfl"],
+        written_methods=["tpcrp", "tpcrp_ccfl"],
+    )
+    monkeypatch.setattr(pilot_gate_module, "PILOT_CONFIG_SHA256", _source_config_sha256(paths[0]))
+    monkeypatch.setattr(pilot_gate_module, "PILOT_REPLICATE_SEEDS", [1, 2, 3, 4, 5])
+    payload = read_artifact(paths[0])
+    payload["environment"]["git_commit"] = "c" * 40
+    atomic_write_json(paths[0], payload)
+
+    with pytest.raises(ValueError, match="one identical execution environment"):
+        evaluate_pilot_gate(root)
 
 
 def test_cv_evidence_rejects_incomplete_configured_seed_set(tmp_path) -> None:
@@ -436,21 +475,30 @@ def test_cv_evidence_rejects_zero_denominators(tmp_path, field, message) -> None
         generate_cv_evidence(root)
 
 
-def test_bullet2_evidence_requires_complete_simclr_dinov2_and_ablations(tmp_path) -> None:
+def test_bullet2_evidence_requires_complete_simclr_dinov2_and_ablations(
+    monkeypatch,
+    tmp_path,
+) -> None:
     methods = ["tpcrp", "tpcrp_ccfl", "ccfl_candidate_only", "ccfl_unweighted"]
     seeds = list(range(10))
     simclr_root = tmp_path / "simclr"
     dinov2_root = tmp_path / "dinov2"
-    _write_synthetic_grid(
+    simclr_paths = _write_synthetic_grid(
         simclr_root,
         configured_methods=methods,
         configured_seeds=seeds,
     )
-    _write_synthetic_grid(
+    dinov2_paths = _write_synthetic_grid(
         dinov2_root,
         configured_methods=["tpcrp", "tpcrp_ccfl"],
         configured_seeds=seeds,
         representation_backend="dinov2",
+    )
+    _patch_bullet2_contract(
+        monkeypatch,
+        simclr_path=simclr_paths[0],
+        dinov2_path=dinov2_paths[0],
+        seeds=seeds,
     )
     output_path = tmp_path / "bullet2_evidence.json"
 
@@ -467,13 +515,21 @@ def test_bullet2_evidence_requires_complete_simclr_dinov2_and_ablations(tmp_path
     assert evidence["dinov2_representation_validation"]["primary"]["replicate_count"] == 10
     assert evidence["dinov2_representation_validation"]["ablations"] == {}
     assert set(evidence["simclr_confirmation"]["ablations"]) == {
-        "ccfl_candidate_only",
-        "ccfl_unweighted",
+        "facility_refinement",
+        "cluster_weighting",
     }
+    assert (
+        evidence["simclr_confirmation"]["ablations"]["facility_refinement"]["method_a"]
+        == "ccfl_unweighted"
+    )
+    assert (
+        evidence["simclr_confirmation"]["ablations"]["facility_refinement"]["method_b"]
+        == "ccfl_candidate_only"
+    )
     assert json.loads(output_path.read_text(encoding="utf-8")) == evidence
 
 
-def test_bullet2_evidence_rejects_incomplete_ablation_grid(tmp_path) -> None:
+def test_bullet2_evidence_rejects_incomplete_ablation_grid(monkeypatch, tmp_path) -> None:
     methods = ["tpcrp", "tpcrp_ccfl", "ccfl_candidate_only", "ccfl_unweighted"]
     seeds = list(range(10))
     simclr_root = tmp_path / "simclr"
@@ -483,11 +539,17 @@ def test_bullet2_evidence_rejects_incomplete_ablation_grid(tmp_path) -> None:
         configured_methods=methods,
         configured_seeds=seeds,
     )
-    _write_synthetic_grid(
+    dinov2_paths = _write_synthetic_grid(
         dinov2_root,
         configured_methods=["tpcrp", "tpcrp_ccfl"],
         configured_seeds=seeds,
         representation_backend="dinov2",
+    )
+    _patch_bullet2_contract(
+        monkeypatch,
+        simclr_path=paths[0],
+        dinov2_path=dinov2_paths[0],
+        seeds=seeds,
     )
     for path in paths:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -496,10 +558,74 @@ def test_bullet2_evidence_rejects_incomplete_ablation_grid(tmp_path) -> None:
             path.unlink()
             break
 
-    with pytest.raises(ValueError, match="missing method partner|seeds do not match"):
+    with pytest.raises(ValueError, match=r"missing method partner|seeds do not match"):
         generate_bullet2_evidence(
             simclr_root=simclr_root,
             dinov2_root=dinov2_root,
+            output_path=tmp_path / "unused.json",
+        )
+
+
+def test_bullet2_evidence_rejects_unfrozen_seed_set(monkeypatch, tmp_path) -> None:
+    methods = ["tpcrp", "tpcrp_ccfl", "ccfl_candidate_only", "ccfl_unweighted"]
+    seeds = list(range(10))
+    simclr_paths = _write_synthetic_grid(
+        tmp_path / "simclr",
+        configured_methods=methods,
+        configured_seeds=seeds,
+    )
+    dinov2_paths = _write_synthetic_grid(
+        tmp_path / "dinov2",
+        configured_methods=["tpcrp", "tpcrp_ccfl"],
+        configured_seeds=seeds,
+        representation_backend="dinov2",
+    )
+    monkeypatch.setattr(
+        bullet2_module,
+        "SIMCLR_CONFIG_SHA256",
+        _source_config_sha256(simclr_paths[0]),
+    )
+    monkeypatch.setattr(
+        bullet2_module,
+        "DINOV2_CONFIG_SHA256",
+        _source_config_sha256(dinov2_paths[0]),
+    )
+
+    with pytest.raises(ValueError, match="requires frozen seeds"):
+        generate_bullet2_evidence(
+            simclr_root=tmp_path / "simclr",
+            dinov2_root=tmp_path / "dinov2",
+            output_path=tmp_path / "unused.json",
+        )
+
+
+def test_bullet2_evidence_rejects_nonprimary_budget(monkeypatch, tmp_path) -> None:
+    methods = ["tpcrp", "tpcrp_ccfl", "ccfl_candidate_only", "ccfl_unweighted"]
+    seeds = list(range(10))
+    simclr_paths = _write_synthetic_grid(
+        tmp_path / "simclr",
+        configured_methods=methods,
+        configured_seeds=seeds,
+        primary_budget=20,
+    )
+    dinov2_paths = _write_synthetic_grid(
+        tmp_path / "dinov2",
+        configured_methods=["tpcrp", "tpcrp_ccfl"],
+        configured_seeds=seeds,
+        representation_backend="dinov2",
+        primary_budget=20,
+    )
+    _patch_bullet2_contract(
+        monkeypatch,
+        simclr_path=simclr_paths[0],
+        dinov2_path=dinov2_paths[0],
+        seeds=seeds,
+    )
+
+    with pytest.raises(ValueError, match="locked to cumulative budget 10"):
+        generate_bullet2_evidence(
+            simclr_root=tmp_path / "simclr",
+            dinov2_root=tmp_path / "dinov2",
             output_path=tmp_path / "unused.json",
         )
 

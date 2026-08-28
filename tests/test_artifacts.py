@@ -26,9 +26,77 @@ from src.protocol import PROTOCOL_VERSION, SeedBundle
 
 def _effective_config() -> dict:
     return {
-        "protocol": {"version": "2.0"},
-        "data": {"name": "synthetic"},
-        "selection": {"round_query_sizes": [2]},
+        "protocol": {
+            "version": "2.0",
+            "deterministic": True,
+            "test_evaluations_per_round": 1,
+        },
+        "output": {"root": "unused", "resume": True},
+        "data": {
+            "name": "cifar10",
+            "root": "unused",
+            "num_workers": 0,
+            "num_classes": 10,
+        },
+        "representation": {
+            "backend": "simclr",
+            "checkpoint_path": "unused.pt",
+            "projection_dim": 4,
+            "batch_size": 8,
+            "embedding_seed": 21,
+        },
+        "selection": {
+            "round_query_sizes": [2],
+            "knn_k": 2,
+            "max_clusters": 2,
+            "min_cluster_size": 2,
+        },
+        "evaluation": {
+            "framework": "fully_supervised",
+            "epochs": 2,
+            "batch_size": 2,
+            "lr": 0.1,
+            "momentum": 0.0,
+            "weight_decay": 0.0,
+            "dropout_p": 0.0,
+            "test_policy": "once_after_fixed_epochs",
+        },
+        "experiment": {
+            "methods": ["random", "tpcrp", "ccfl_unweighted", "probcover"],
+            "replicate_seeds": [42],
+            "primary_comparison": {
+                "method_a": "tpcrp",
+                "method_b": "random",
+                "cumulative_budget": 2,
+                "metric": "test_accuracy",
+            },
+        },
+        "ccfl_variants": {
+            "tpcrp_ccfl": {
+                "candidates_per_cluster": 2,
+                "refine_steps": 1,
+                "use_cluster_weights": True,
+            },
+            "ccfl_candidate_only": {
+                "candidates_per_cluster": 2,
+                "refine_steps": 0,
+                "use_cluster_weights": False,
+            },
+            "ccfl_unweighted": {
+                "candidates_per_cluster": 2,
+                "refine_steps": 1,
+                "use_cluster_weights": False,
+            },
+            "ccfl_weighted": {
+                "candidates_per_cluster": 2,
+                "refine_steps": 1,
+                "use_cluster_weights": True,
+            },
+        },
+        "probcover": {
+            "alpha": 0.95,
+            "delta_search": {"minimum": 0.05, "maximum": 0.10, "step": 0.01},
+        },
         "run": {
             "framework": "fully_supervised",
             "method": "random",
@@ -42,7 +110,7 @@ def _valid_artifact() -> dict:
     digest = config_digest(effective)
     seeds = SeedBundle.for_round(
         replicate=42,
-        dataset="synthetic",
+        dataset="cifar10",
         framework="fully_supervised",
         method="random",
         round_id=1,
@@ -103,6 +171,26 @@ def _valid_artifact() -> dict:
 def _refresh_identity(payload: dict) -> None:
     payload["config_digest"] = config_digest(payload["effective_config"])
     payload["run_id"] = build_run_id(payload["effective_config"])
+
+
+def _set_run_method(payload: dict, method: str) -> None:
+    payload["effective_config"]["run"]["method"] = method
+    run = payload["effective_config"]["run"]
+    for round_result in payload["rounds"]:
+        seeds = SeedBundle.for_round(
+            replicate=run["replicate_seed"],
+            dataset=payload["effective_config"]["data"]["name"],
+            framework=run["framework"],
+            method=method,
+            round_id=round_result["round"],
+        )
+        round_result["seeds"] = {
+            "replicate": seeds.replicate,
+            "clustering": seeds.clustering,
+            "selector": seeds.selector,
+            "training": seeds.training,
+            "dataloader": seeds.dataloader,
+        }
 
 
 def test_canonical_json_digest_and_run_id_have_fixed_outputs() -> None:
@@ -339,6 +427,42 @@ def test_validate_artifact_rejects_negative_global_index() -> None:
         validate_artifact(payload)
 
 
+def test_validate_artifact_rejects_schedule_disagreement() -> None:
+    payload = _valid_artifact()
+    payload["effective_config"]["selection"]["round_query_sizes"] = [1]
+    payload["effective_config"]["experiment"]["primary_comparison"]["cumulative_budget"] = 1
+    _refresh_identity(payload)
+
+    with pytest.raises(ValueError, match="query_size disagrees with configured schedule"):
+        validate_artifact(payload)
+
+
+def test_validate_artifact_rejects_training_epoch_disagreement() -> None:
+    payload = _valid_artifact()
+    payload["effective_config"]["evaluation"]["epochs"] = 3
+    _refresh_identity(payload)
+
+    with pytest.raises(ValueError, match="trained_epochs disagrees with evaluation config"):
+        validate_artifact(payload)
+
+
+def test_validate_artifact_rejects_rederived_seed_disagreement() -> None:
+    payload = _valid_artifact()
+    payload["rounds"][0]["seeds"]["selector"] += 1
+
+    with pytest.raises(ValueError, match="component seeds are inconsistent"):
+        validate_artifact(payload)
+
+
+def test_validate_artifact_rejects_index_outside_cifar_train_split() -> None:
+    payload = _valid_artifact()
+    payload["rounds"][0]["new_indices"] = [50_000, 1]
+    payload["rounds"][0]["selected_indices"] = [50_000, 1]
+
+    with pytest.raises(ValueError, match="outside CIFAR-10 train data"):
+        validate_artifact(payload)
+
+
 def test_validate_artifact_accepts_ccfl_and_probcover_metadata() -> None:
     ccfl_payload = _valid_artifact()
     ccfl_config = {
@@ -346,8 +470,8 @@ def test_validate_artifact_accepts_ccfl_and_probcover_metadata() -> None:
         "refine_steps": 1,
         "use_cluster_weights": False,
     }
-    ccfl_payload["effective_config"]["run"]["method"] = "ccfl_unweighted"
-    ccfl_payload["effective_config"]["ccfl_variants"] = {"ccfl_unweighted": ccfl_config}
+    _set_run_method(ccfl_payload, "ccfl_unweighted")
+    ccfl_payload["effective_config"]["ccfl_variants"]["ccfl_unweighted"] = ccfl_config
     ccfl_payload["rounds"][0]["method_metadata"] = {
         "ccfl_variant": "ccfl_unweighted",
         **ccfl_config,
@@ -356,7 +480,7 @@ def test_validate_artifact_accepts_ccfl_and_probcover_metadata() -> None:
     validate_artifact(ccfl_payload)
 
     probcover_payload = _valid_artifact()
-    probcover_payload["effective_config"]["run"]["method"] = "probcover"
+    _set_run_method(probcover_payload, "probcover")
     probcover_payload["rounds"][0]["method_metadata"] = {
         "probcover_delta": 0.25,
         "probcover_radius_seed": 17,
@@ -380,7 +504,7 @@ def test_validate_artifact_rejects_invalid_probcover_metadata(
     message: str,
 ) -> None:
     payload = _valid_artifact()
-    payload["effective_config"]["run"]["method"] = "probcover"
+    _set_run_method(payload, "probcover")
     payload["rounds"][0]["method_metadata"] = {
         "probcover_delta": 0.25,
         "probcover_radius_seed": 17,

@@ -132,8 +132,7 @@ def _load_dinov2_encoder(representation: dict[str, Any], device: torch.device) -
     expected_digest = str(representation["weights_sha256"])
     if actual_digest != expected_digest:
         raise ValueError(
-            "DINOv2 checkpoint SHA-256 mismatch: "
-            f"expected {expected_digest}, found {actual_digest}"
+            f"DINOv2 checkpoint SHA-256 mismatch: expected {expected_digest}, found {actual_digest}"
         )
     try:
         from transformers import Dinov2Model

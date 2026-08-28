@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -133,7 +134,14 @@ def load_or_compute_embeddings(
         transform=build_embedding_transform(representation),
     )
     embeddings = grab_embeddings(encoder=encoder, loader=loader, device=device)
-    np.save(embedding_path, embeddings)
+    temporary = embedding_path.with_name(f".{embedding_path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("wb") as handle:
+            np.save(handle, embeddings)
+        os.replace(temporary, embedding_path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
     print(f"Saved {split} embeddings to {embedding_path}")
     return embeddings
 
@@ -719,9 +727,8 @@ def run_single_experiment(
         or not np.isfinite(test_embeddings).all()
     ):
         raise ValueError("embedding caches must be finite numeric matrices with matching widths")
-    if (
-        representation_cfg["backend"] == "dinov2"
-        and train_embeddings.shape[1] != int(representation_cfg["feature_dim"])
+    if representation_cfg["backend"] == "dinov2" and train_embeddings.shape[1] != int(
+        representation_cfg["feature_dim"]
     ):
         raise ValueError("DINOv2 embedding width does not match representation.feature_dim")
 

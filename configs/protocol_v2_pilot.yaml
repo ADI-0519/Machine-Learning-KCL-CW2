@@ -21,7 +21,7 @@ representation:
   embedding_seed: 21
 
 selection:
-  round_query_sizes: [10, 10, 10, 10, 10]
+  round_query_sizes: [10, 10]
   knn_k: 20
   max_clusters: 500
   min_cluster_size: 5

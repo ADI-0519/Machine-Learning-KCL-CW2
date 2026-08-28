@@ -515,7 +515,7 @@ def test_protocol_v2_pilot_config_locks_initial_comparison() -> None:
         "probcover",
     }
     assert config["protocol"]["version"] == "2.0"
-    assert config["selection"]["round_query_sizes"] == [10, 10, 10, 10, 10]
+    assert config["selection"]["round_query_sizes"] == [10, 10]
     assert config["experiment"]["methods"] == [
         "random",
         "tpcrp",
@@ -549,7 +549,7 @@ def test_protocol_v2_pilot_config_locks_initial_comparison() -> None:
                 "ccfl_candidate_only",
                 "ccfl_unweighted",
             ],
-            "3d935adfb8825d34f33d955bd907e45cc46a5e616fab44e81772d32645caecd5",
+            "3d022f2231f681d9b2e509d56be0812e9baea9355f529e365df5f58e1e12448e",
         ),
         (
             "configs/protocol_v2_confirmation.yaml",

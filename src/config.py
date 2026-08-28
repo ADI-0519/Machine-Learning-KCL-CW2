@@ -158,9 +158,7 @@ def validate_protocol_config(config: dict[str, Any]) -> None:
             raise ValueError("representation.weights_sha256 must be a lowercase SHA-256")
         if _positive_int(representation["feature_dim"], "representation.feature_dim") != 384:
             raise ValueError("representation.feature_dim must equal 384 for dinov2-small")
-        resize_size = _positive_int(
-            representation["resize_size"], "representation.resize_size"
-        )
+        resize_size = _positive_int(representation["resize_size"], "representation.resize_size")
         crop_size = _positive_int(representation["crop_size"], "representation.crop_size")
         if crop_size > resize_size:
             raise ValueError("representation.crop_size must not exceed resize_size")

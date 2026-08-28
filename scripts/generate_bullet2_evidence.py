@@ -9,42 +9,48 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from scripts.aggregate_results import build_round_metrics, load_validated_artifacts
-from src.artifacts import atomic_write_json
+from scripts.aggregate_results import (
+    build_round_metrics,
+    load_validated_artifacts,
+    require_uniform_environment,
+)
+from src.artifacts import atomic_write_json, config_digest
 from src.statistics import pair_method_rows, paired_bootstrap_ci
 
 FULL_METHOD = "tpcrp_ccfl"
 BASELINE_METHOD = "tpcrp"
-ABLATION_METHODS = ("ccfl_candidate_only", "ccfl_unweighted")
 CONFIRMATION_REPLICATES = 10
+CONFIRMATION_SEEDS = list(range(42, 52))
+PRIMARY_BUDGET = 10
+SIMCLR_CONFIG_SHA256 = "c4f786bf1e51e9f65e8a461185df7007474e96f885119bc65d038c868b70017f"
+DINOV2_CONFIG_SHA256 = "37d8dbc22da725d5c414cc56fad579287b8a63e73fc7ff69ac509dc51ce3a70e"
 
 
 def _comparison(
     rows: pd.DataFrame,
     *,
+    method_a: str,
     method_b: str,
     budget: int,
     expected_seeds: list[int],
 ) -> dict[str, Any]:
-    paired = pair_method_rows(rows, method_a=FULL_METHOD, method_b=method_b)
+    paired = pair_method_rows(rows, method_a=method_a, method_b=method_b)
     paired = paired.loc[paired["cumulative_budget"] == budget].copy()
     if paired.empty:
-        raise ValueError(f"no {FULL_METHOD}/{method_b} pairs exist at budget {budget}")
+        raise ValueError(f"no {method_a}/{method_b} pairs exist at budget {budget}")
     actual_seeds = sorted(int(seed) for seed in paired["replicate_seed"])
     if actual_seeds != expected_seeds:
         raise ValueError(
-            f"{FULL_METHOD}/{method_b} seeds do not match the locked confirmation set: "
+            f"{method_a}/{method_b} seeds do not match the locked confirmation set: "
             f"expected {expected_seeds}, found {actual_seeds}"
         )
     differences = paired["test_accuracy_a"].to_numpy(dtype=float) - paired[
         "test_accuracy_b"
     ].to_numpy(dtype=float)
     ci_low, ci_high = paired_bootstrap_ci(differences)
-    run_ids = sorted(
-        set(paired["run_id_a"].astype(str)).union(paired["run_id_b"].astype(str))
-    )
+    run_ids = sorted(set(paired["run_id_a"].astype(str)).union(paired["run_id_b"].astype(str)))
     return {
-        "method_a": FULL_METHOD,
+        "method_a": method_a,
         "method_b": method_b,
         "cumulative_budget": budget,
         "replicate_count": len(actual_seeds),
@@ -66,24 +72,24 @@ def _root_evidence(
     require_ablations: bool,
 ) -> dict[str, Any]:
     artifacts, config = load_validated_artifacts(root)
-    git_commits = {str(artifact["environment"]["git_commit"]) for artifact in artifacts}
-    if len(git_commits) != 1 or any(artifact["environment"]["git_dirty"] for artifact in artifacts):
-        raise ValueError(f"all runs under {root} must use one clean Git commit")
-    checkpoint_digests = {
-        str(artifact["environment"]["checkpoint_sha256"]) for artifact in artifacts
-    }
-    if len(checkpoint_digests) != 1:
-        raise ValueError(f"all runs under {root} must use one representation checkpoint")
+    source_digest = config_digest(config)
+    expected_source_digest = (
+        SIMCLR_CONFIG_SHA256 if expected_backend == "simclr" else DINOV2_CONFIG_SHA256
+    )
+    if source_digest != expected_source_digest:
+        raise ValueError(
+            f"{expected_backend} artifacts do not use the frozen confirmation configuration: "
+            f"expected {expected_source_digest}, found {source_digest}"
+        )
+    environment = require_uniform_environment(artifacts, context=f"{expected_backend} confirmation")
+    checkpoint_digest = str(environment["checkpoint_sha256"])
     representation = config["representation"]
     if representation["backend"] != expected_backend:
         raise ValueError(
             f"expected {expected_backend!r} representation under {root}, "
             f"found {representation['backend']!r}"
         )
-    if (
-        expected_backend == "dinov2"
-        and next(iter(checkpoint_digests)) != representation["weights_sha256"]
-    ):
+    if expected_backend == "dinov2" and checkpoint_digest != representation["weights_sha256"]:
         raise ValueError("DINOv2 artifact checkpoint digest disagrees with the locked config")
     if config["data"]["name"] != "cifar10":
         raise ValueError("bullet-2 evidence is locked to CIFAR-10")
@@ -95,30 +101,41 @@ def _root_evidence(
     ):
         raise ValueError("source config does not contain the locked TPCRP-CCFL comparison")
     expected_seeds = sorted(int(seed) for seed in config["experiment"]["replicate_seeds"])
-    if len(expected_seeds) != CONFIRMATION_REPLICATES:
-        raise ValueError("bullet-2 confirmation requires exactly 10 configured seeds")
+    if expected_seeds != CONFIRMATION_SEEDS:
+        raise ValueError(
+            f"bullet-2 confirmation requires frozen seeds {CONFIRMATION_SEEDS}; "
+            f"found {expected_seeds}"
+        )
 
     rows = build_round_metrics(artifacts)
     budget = int(comparison_config["cumulative_budget"])
+    if budget != PRIMARY_BUDGET:
+        raise ValueError(f"bullet-2 evidence is locked to cumulative budget {PRIMARY_BUDGET}")
     primary = _comparison(
         rows,
+        method_a=FULL_METHOD,
         method_b=BASELINE_METHOD,
         budget=budget,
         expected_seeds=expected_seeds,
     )
-    ablations = (
-        {
-            method: _comparison(
+    ablations = {}
+    if require_ablations:
+        ablations = {
+            "facility_refinement": _comparison(
                 rows,
-                method_b=method,
+                method_a="ccfl_unweighted",
+                method_b="ccfl_candidate_only",
                 budget=budget,
                 expected_seeds=expected_seeds,
-            )
-            for method in ABLATION_METHODS
+            ),
+            "cluster_weighting": _comparison(
+                rows,
+                method_a=FULL_METHOD,
+                method_b="ccfl_unweighted",
+                budget=budget,
+                expected_seeds=expected_seeds,
+            ),
         }
-        if require_ablations
-        else {}
-    )
 
     primary_pairs = pair_method_rows(rows, method_a=FULL_METHOD, method_b=BASELINE_METHOD)
     primary_pairs = primary_pairs.loc[primary_pairs["cumulative_budget"] == budget]
@@ -132,6 +149,7 @@ def _root_evidence(
     representation_evidence: dict[str, Any] = {
         "backend": expected_backend,
         "checkpoint_path": representation["checkpoint_path"],
+        "checkpoint_sha256": checkpoint_digest,
     }
     if expected_backend == "dinov2":
         representation_evidence.update(
@@ -143,7 +161,8 @@ def _root_evidence(
         )
     return {
         "artifact_root": str(root),
-        "git_commit": next(iter(git_commits)),
+        "source_config_sha256": source_digest,
+        "git_commit": environment["git_commit"],
         "representation": representation_evidence,
         "primary": primary,
         "ablations": ablations,
@@ -174,15 +193,19 @@ def generate_bullet2_evidence(
     if simclr["git_commit"] != dinov2["git_commit"]:
         raise ValueError("SimCLR and DINOv2 confirmations must use the same clean Git commit")
     checks = {
-        "simclr_ten_paired_seeds": simclr["primary"]["replicate_count"] == 10,
+        "simclr_ten_paired_seeds": (
+            simclr["primary"]["replicate_count"] == CONFIRMATION_REPLICATES
+        ),
         "simclr_gain_at_least_2pp": simclr["primary"]["paired_improvement_pp"] >= 2.0,
         "simclr_ci95_excludes_zero": simclr["primary"]["paired_ci95_pp"][0] > 0.0,
         "simclr_coverage_improves": simclr["coverage_improvement_percent"] > 0.0,
         "simclr_runtime_at_most_2x": simclr["selector_runtime_ratio"] <= 2.0,
-        "dinov2_ten_paired_seeds": dinov2["primary"]["replicate_count"] == 10,
+        "dinov2_ten_paired_seeds": (
+            dinov2["primary"]["replicate_count"] == CONFIRMATION_REPLICATES
+        ),
         "dinov2_mean_gain_positive": dinov2["primary"]["paired_improvement_pp"] > 0.0,
         "simclr_ablation_grid_complete": all(
-            result["replicate_count"] == 10
+            result["replicate_count"] == CONFIRMATION_REPLICATES
             for result in simclr["ablations"].values()
         ),
     }

@@ -121,6 +121,13 @@ Train SimCLR:
 python -m scripts.train_simclr
 ```
 
+Training is permitted only from a clean Git worktree. The command uses the
+fixed 100-epoch schedule, atomically writes the final-epoch checkpoint, refuses
+to overwrite an existing checkpoint by default, and records a sidecar manifest
+containing the code revision, training-config digest, and checkpoint SHA-256.
+After this one-time run, the digest must be copied into the protocol-v2 SimCLR
+configs and frozen before any pilot artifact is produced.
+
 Prepare the second frozen representation. This downloads an exact Git revision
 of `facebook/dinov2-small`, verifies the model file against the SHA-256 locked in
 `configs/protocol_v2_dinov2.yaml`, and writes a local manifest. Experiments then
@@ -190,12 +197,19 @@ pooled into `X`. Use the bullet only when `claim_ready` is `true`.
 
 The locked source-config SHA-256 digests are:
 
-- pilot: `3d935adfb8825d34f33d955bd907e45cc46a5e616fab44e81772d32645caecd5`
+- pilot: `3d022f2231f681d9b2e509d56be0812e9baea9355f529e365df5f58e1e12448e`
 - SimCLR confirmation: `c4f786bf1e51e9f65e8a461185df7007474e96f885119bc65d038c868b70017f`
 - DINOv2 confirmation: `37d8dbc22da725d5c414cc56fad579287b8a63e73fc7ff69ac509dc51ce3a70e`
 
 Any configuration edit changes its digest and constitutes a different
 experiment; update the specification before running it.
+
+The evidence command enforces these exact config digests, the predeclared seed
+sets (`42`–`46` for Gate B and `42`–`51` for confirmation), cumulative budget
+10, a single clean execution environment per grid, and one checkpoint per
+representation. The ablation report isolates facility refinement as
+`ccfl_unweighted - ccfl_candidate_only` and cluster weighting as
+`tpcrp_ccfl - ccfl_unweighted`.
 
 Every round artifact records cumulative representation coverage (mean, p95,
 and maximum distance to the selected set), mean selected-pair cosine,
@@ -259,7 +273,9 @@ python -m pytest tests/test_statistics.py tests/test_reporting_pipeline.py
 ## Reproducibility Notes
 
 - Component seeds and DataLoader generators are derived deterministically from
-  the replicate, framework, method, and active-learning round.
+  the replicate, framework, method family, and active-learning round. The
+  TypiClust/CCFL ablation family shares selector randomness to isolate component
+  effects; unrelated selectors retain independent streams.
 - Strict deterministic PyTorch operations are enabled. Unsupported operations
   fail rather than silently becoming nondeterministic.
 - The experiment launcher sets `CUBLAS_WORKSPACE_CONFIG=:4096:8` before loading

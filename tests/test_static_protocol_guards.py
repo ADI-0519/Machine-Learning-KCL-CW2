@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import subprocess
 from pathlib import Path
 
 
@@ -57,3 +58,17 @@ def test_posthoc_class_balance_stays_outside_selection_and_training_modules() ->
         if "posthoc_class_balance" in path.read_text(encoding="utf-8"):
             offenders.append(str(path))
     assert offenders == []
+
+
+def test_generated_protocol_roots_are_git_ignored() -> None:
+    generated_paths = [
+        "results/protocol_v2/runs/example.json",
+        "results/protocol_v2_confirmation_simclr/runs/example.json",
+        "results/protocol_v2_confirmation_dinov2/runs/example.json",
+    ]
+    for generated_path in generated_paths:
+        completed = subprocess.run(
+            ["git", "check-ignore", "--quiet", generated_path],
+            check=False,
+        )
+        assert completed.returncode == 0, f"generated output is not ignored: {generated_path}"

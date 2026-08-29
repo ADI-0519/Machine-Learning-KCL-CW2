@@ -260,3 +260,10 @@ digests before committing the final experiment definition.
 T054C and T055 are complete. No protocol-v2 selection/evaluation artifact has
 yet been produced, so no accuracy-improvement or CV performance claim is
 authorized. T056, the five-seed paired Gate-B pilot, is next.
+
+Before continuing T056, the first seed exposed that protocol-v2 output roots
+were not covered by `.gitignore`: writing the first immutable artifact made the
+next seed fail the clean-worktree guard. Added an ignore rule covering pilot and
+both confirmation roots plus a three-root regression test (`209 passed`). The
+completed seed-42 artifact from the preceding commit must be archived and rerun
+after this fix is committed; its embedding caches remain valid and reusable.

@@ -10,4 +10,5 @@ venv/
 results/embeddings/
 results/selections/
 results/checkpoints/
+results/protocol_v2*/
 data/

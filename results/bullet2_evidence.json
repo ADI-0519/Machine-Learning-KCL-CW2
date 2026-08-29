@@ -1,0 +1,243 @@
+{
+  "claim_checks": {
+    "dinov2_mean_gain_positive": true,
+    "dinov2_ten_paired_seeds": true,
+    "simclr_ablation_grid_complete": true,
+    "simclr_ci95_excludes_zero": true,
+    "simclr_coverage_improves": true,
+    "simclr_gain_at_least_2pp": true,
+    "simclr_runtime_at_most_2x": true,
+    "simclr_ten_paired_seeds": true
+  },
+  "claim_ready": true,
+  "cv_metric_x_pp": 3.456,
+  "cv_metric_x_pp_display": "3.5",
+  "dinov2_representation_validation": {
+    "ablations": {},
+    "artifact_root": "results\\protocol_v2_confirmation_dinov2",
+    "coverage_improvement_percent": 0.8972949815347525,
+    "git_commit": "6de435c9f7e6689a2e98d0ce756a7592b162d0d5",
+    "primary": {
+      "cumulative_budget": 10,
+      "mean_accuracy_a": 0.7732,
+      "mean_accuracy_b": 0.73895,
+      "method_a": "tpcrp_ccfl",
+      "method_b": "tpcrp",
+      "paired_ci95_pp": [
+        3.1990000000000003,
+        3.612025
+      ],
+      "paired_improvement_pp": 3.4250000000000003,
+      "replicate_count": 10,
+      "replicate_seeds": [
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51
+      ],
+      "run_ids": [
+        "v2.0-042d2cbc5dea14ca",
+        "v2.0-05900b6340ad699a",
+        "v2.0-1da6cbb45854cbf6",
+        "v2.0-2d4772666959aec5",
+        "v2.0-3e25dd5576235c3e",
+        "v2.0-424ff06ea4904eff",
+        "v2.0-541b49ca7e4694d7",
+        "v2.0-5801f1a15a3f653d",
+        "v2.0-5dd61b759355f798",
+        "v2.0-67614146c28429dd",
+        "v2.0-763abd24efe5e47c",
+        "v2.0-7b2ac7d65eb5d326",
+        "v2.0-9eb43d88dd9d6830",
+        "v2.0-aab755da949396dc",
+        "v2.0-ab4b05850604d0f5",
+        "v2.0-c4c84b2ad9ad1077",
+        "v2.0-ca278d996a828768",
+        "v2.0-d2b0f943a608ddd3",
+        "v2.0-d583903104c49317",
+        "v2.0-f8c5d81262b44646"
+      ],
+      "ties": 0,
+      "wins": 10
+    },
+    "representation": {
+      "backend": "dinov2",
+      "checkpoint_path": "./results/checkpoints/dinov2-small/model.safetensors",
+      "checkpoint_sha256": "ae1e99fcefd534ed978cdeb8326f08030c96e28b7a81ffcbc98a857c84d14be1",
+      "model_id": "facebook/dinov2-small",
+      "model_revision": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
+      "weights_sha256": "ae1e99fcefd534ed978cdeb8326f08030c96e28b7a81ffcbc98a857c84d14be1"
+    },
+    "selector_runtime_ratio": 1.0650979505398588,
+    "source_config_sha256": "37d8dbc22da725d5c414cc56fad579287b8a63e73fc7ff69ac509dc51ce3a70e"
+  },
+  "metric_definition": "100 * mean_seed(test_accuracy_tpcrp_ccfl - test_accuracy_tpcrp) at CIFAR-10 cumulative budget 10 under the SimCLR confirmation config",
+  "protocol_version": "2.0",
+  "simclr_confirmation": {
+    "ablations": {
+      "cluster_weighting": {
+        "cumulative_budget": 10,
+        "mean_accuracy_a": 0.5748300000000001,
+        "mean_accuracy_b": 0.5748300000000001,
+        "method_a": "tpcrp_ccfl",
+        "method_b": "ccfl_unweighted",
+        "paired_ci95_pp": [
+          0.0,
+          0.0
+        ],
+        "paired_improvement_pp": 0.0,
+        "replicate_count": 10,
+        "replicate_seeds": [
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51
+        ],
+        "run_ids": [
+          "v2.0-055f33d0ea5e8057",
+          "v2.0-17f6adceaa6ca0c5",
+          "v2.0-1f595828b4963808",
+          "v2.0-2f0bd7c22f97165c",
+          "v2.0-631d1531d715f75d",
+          "v2.0-829a7a4f0c45e265",
+          "v2.0-84967252c3be74f3",
+          "v2.0-8a7da02f4b0686f4",
+          "v2.0-967ba2ffcf91ade6",
+          "v2.0-a1353b7b96f9a1ff",
+          "v2.0-a9a3dd389fd0d647",
+          "v2.0-bbdba471c39cc635",
+          "v2.0-c9aea22ce9283b3a",
+          "v2.0-d49585293fbe6197",
+          "v2.0-d5880aac28c969b6",
+          "v2.0-da8e3b06f82a886a",
+          "v2.0-de0809b832a03900",
+          "v2.0-e1b11e30916c0d8f",
+          "v2.0-e297700fa16db610",
+          "v2.0-ef8543539852a2f1"
+        ],
+        "ties": 10,
+        "wins": 0
+      },
+      "facility_refinement": {
+        "cumulative_budget": 10,
+        "mean_accuracy_a": 0.5748300000000001,
+        "mean_accuracy_b": 0.54027,
+        "method_a": "ccfl_unweighted",
+        "method_b": "ccfl_candidate_only",
+        "paired_ci95_pp": [
+          1.0579750000000026,
+          5.771999999999999
+        ],
+        "paired_improvement_pp": 3.456,
+        "replicate_count": 10,
+        "replicate_seeds": [
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51
+        ],
+        "run_ids": [
+          "v2.0-055f33d0ea5e8057",
+          "v2.0-1f595828b4963808",
+          "v2.0-43dee6f128955eb3",
+          "v2.0-5430681fbc2fd719",
+          "v2.0-6ec4b405a898f1cd",
+          "v2.0-6f6aab56020cfdfd",
+          "v2.0-722055b6391785b6",
+          "v2.0-84967252c3be74f3",
+          "v2.0-8aa60f846e39a932",
+          "v2.0-967ba2ffcf91ade6",
+          "v2.0-a1353b7b96f9a1ff",
+          "v2.0-a9a3dd389fd0d647",
+          "v2.0-ab68a4fa88e9d23d",
+          "v2.0-c5b670555fa7ef82",
+          "v2.0-c9aea22ce9283b3a",
+          "v2.0-ccf4374a4544abf7",
+          "v2.0-d49585293fbe6197",
+          "v2.0-e297700fa16db610",
+          "v2.0-ef071d22d77518b7",
+          "v2.0-ef8543539852a2f1"
+        ],
+        "ties": 0,
+        "wins": 6
+      }
+    },
+    "artifact_root": "results\\protocol_v2_confirmation_simclr",
+    "coverage_improvement_percent": 1.8086924119003447,
+    "git_commit": "6de435c9f7e6689a2e98d0ce756a7592b162d0d5",
+    "primary": {
+      "cumulative_budget": 10,
+      "mean_accuracy_a": 0.5748300000000001,
+      "mean_accuracy_b": 0.54027,
+      "method_a": "tpcrp_ccfl",
+      "method_b": "tpcrp",
+      "paired_ci95_pp": [
+        1.0579750000000026,
+        5.771999999999999
+      ],
+      "paired_improvement_pp": 3.456,
+      "replicate_count": 10,
+      "replicate_seeds": [
+        42,
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        50,
+        51
+      ],
+      "run_ids": [
+        "v2.0-17f6adceaa6ca0c5",
+        "v2.0-2f0bd7c22f97165c",
+        "v2.0-312343b263c332d9",
+        "v2.0-38a3885ee56c9e46",
+        "v2.0-3c5e002a32dc61b4",
+        "v2.0-5a4ca09b43528dc8",
+        "v2.0-631d1531d715f75d",
+        "v2.0-7cb5d4b7b5f68d2a",
+        "v2.0-829a7a4f0c45e265",
+        "v2.0-8a7da02f4b0686f4",
+        "v2.0-bbdba471c39cc635",
+        "v2.0-d5880aac28c969b6",
+        "v2.0-da8e3b06f82a886a",
+        "v2.0-de0809b832a03900",
+        "v2.0-de1230f2d453aa22",
+        "v2.0-de25c99bbc499879",
+        "v2.0-e10a86734f5ed2ec",
+        "v2.0-e1b11e30916c0d8f",
+        "v2.0-e53e67cd87cd1d29",
+        "v2.0-fba68adf1ab4668a"
+      ],
+      "ties": 0,
+      "wins": 6
+    },
+    "representation": {
+      "backend": "simclr",
+      "checkpoint_path": "./results/checkpoints/simclr_resnet18.pt",
+      "checkpoint_sha256": "05a6b66f8c5605f73f6592db57dd5b28c075ce3bbde8e48fcd0a977c0bb2a814"
+    },
+    "selector_runtime_ratio": 1.0021280080864765,
+    "source_config_sha256": "5c0ec92e5bb01ef6c000ff397e11e5510c7d2bc22d8f4b348ddde9514e79d2e8"
+  }
+}

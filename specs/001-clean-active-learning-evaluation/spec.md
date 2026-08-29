@@ -311,7 +311,9 @@ data:
   num_classes: 10
 
 representation:
+  backend: "simclr"
   checkpoint_path: "./results/checkpoints/simclr_resnet18.pt"
+  weights_sha256: "<64-character SHA-256 frozen before experiments>"
   projection_dim: 128
   batch_size: 256
   embedding_seed: 21

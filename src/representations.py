@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,7 @@ import torch
 from torch import nn
 from torchvision import transforms
 
+from .artifacts import config_digest
 from .models import SimCLRModel
 from .protocol import PROTOCOL_VERSION
 
@@ -105,11 +107,79 @@ class Dinov2Encoder(nn.Module):
 
 def _load_simclr_encoder(representation: dict[str, Any], device: torch.device) -> nn.Module:
     checkpoint_path = Path(representation["checkpoint_path"])
+    manifest_path = checkpoint_path.with_suffix(f"{checkpoint_path.suffix}.manifest.json")
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"required SimCLR checkpoint is missing: {checkpoint_path}")
+    if not manifest_path.is_file():
+        raise FileNotFoundError(f"required SimCLR manifest is missing: {manifest_path}")
+    actual_digest = _file_sha256(checkpoint_path)
+    expected_digest = str(representation["weights_sha256"])
+    if actual_digest != expected_digest:
+        raise ValueError(
+            f"SimCLR checkpoint SHA-256 mismatch: expected {expected_digest}, found {actual_digest}"
+        )
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid SimCLR manifest at {manifest_path}: {exc}") from exc
+    expected_manifest_fields = {
+        "manifest_version",
+        "checkpoint_path",
+        "checkpoint_sha256",
+        "checkpoint_format_version",
+        "git_commit",
+        "training_config_sha256",
+        "training_seed",
+        "trained_epochs",
+        "final_training_loss",
+    }
+    if not isinstance(manifest, dict) or set(manifest) != expected_manifest_fields:
+        raise ValueError("SimCLR manifest has an invalid schema")
+    if (
+        manifest["manifest_version"] != 1
+        or manifest["checkpoint_format_version"] != 2
+        or manifest["checkpoint_sha256"] != expected_digest
+        or Path(str(manifest["checkpoint_path"])).resolve() != checkpoint_path.resolve()
+        or not isinstance(manifest["git_commit"], str)
+        or not re.fullmatch(r"[0-9a-f]{40}", manifest["git_commit"])
+        or not isinstance(manifest["training_config_sha256"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", manifest["training_config_sha256"])
+        or not isinstance(manifest["training_seed"], int)
+        or isinstance(manifest["training_seed"], bool)
+        or not isinstance(manifest["trained_epochs"], int)
+        or isinstance(manifest["trained_epochs"], bool)
+        or manifest["trained_epochs"] <= 0
+        or not isinstance(manifest["final_training_loss"], (int, float))
+        or isinstance(manifest["final_training_loss"], bool)
+        or not math.isfinite(float(manifest["final_training_loss"]))
+    ):
+        raise ValueError("SimCLR manifest provenance is inconsistent")
+
     model = SimCLRModel(proj_dim=int(representation["projection_dim"])).to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
-    if not isinstance(checkpoint, dict):
-        raise ValueError("SimCLR checkpoint must contain a state-dict mapping")
-    state_dict = checkpoint.get("model_state_dict", checkpoint)
+    expected_checkpoint_fields = {
+        "checkpoint_format_version",
+        "epoch",
+        "model_state_dict",
+        "final_training_loss",
+        "training_config",
+        "training_config_sha256",
+        "git_commit",
+    }
+    if not isinstance(checkpoint, dict) or set(checkpoint) != expected_checkpoint_fields:
+        raise ValueError("SimCLR checkpoint has an invalid schema")
+    if (
+        checkpoint["checkpoint_format_version"] != manifest["checkpoint_format_version"]
+        or checkpoint["epoch"] != manifest["trained_epochs"]
+        or checkpoint["git_commit"] != manifest["git_commit"]
+        or checkpoint["final_training_loss"] != manifest["final_training_loss"]
+        or not isinstance(checkpoint["training_config"], dict)
+        or config_digest(checkpoint["training_config"]) != manifest["training_config_sha256"]
+        or checkpoint["training_config_sha256"] != manifest["training_config_sha256"]
+        or checkpoint["training_config"].get("seed") != manifest["training_seed"]
+    ):
+        raise ValueError("SimCLR checkpoint disagrees with its provenance manifest")
+    state_dict = checkpoint["model_state_dict"]
     try:
         model.load_state_dict(state_dict)
     except RuntimeError as exc:

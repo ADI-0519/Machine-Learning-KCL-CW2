@@ -289,11 +289,8 @@ def validate_artifact(payload: dict[str, Any]) -> None:
         and str(Path(checkpoint_path).resolve()) != configured_checkpoint
     ):
         raise ValueError("artifact checkpoint_path disagrees with effective configuration")
-    if (
-        representation["backend"] == "dinov2"
-        and checkpoint_digest != representation["weights_sha256"]
-    ):
-        raise ValueError("artifact DINOv2 checkpoint digest disagrees with effective configuration")
+    if checkpoint_digest is not None and checkpoint_digest != representation["weights_sha256"]:
+        raise ValueError("artifact checkpoint digest disagrees with effective configuration")
 
     rounds = payload["rounds"]
     if not isinstance(rounds, list) or not rounds:

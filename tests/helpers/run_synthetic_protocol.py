@@ -57,7 +57,7 @@ def main() -> None:
         "deterministic_algorithms": True,
         "cublas_workspace_config": None,
         "checkpoint_path": "unused.pt",
-        "checkpoint_sha256": "f" * 64,
+        "checkpoint_sha256": "b" * 64,
     }
     experiment.run_single_experiment(
         config_path=sys.argv[1],

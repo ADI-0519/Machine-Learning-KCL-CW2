@@ -112,6 +112,7 @@ def validate_protocol_config(config: dict[str, Any]) -> None:
         expected_representation_fields = {
             "backend",
             "checkpoint_path",
+            "weights_sha256",
             "projection_dim",
             "batch_size",
             "embedding_seed",
@@ -137,6 +138,13 @@ def validate_protocol_config(config: dict[str, Any]) -> None:
         or not representation["checkpoint_path"]
     ):
         raise ValueError("representation.checkpoint_path must be a non-empty string")
+    weights_digest = representation["weights_sha256"]
+    if (
+        not isinstance(weights_digest, str)
+        or len(weights_digest) != 64
+        or any(character not in "0123456789abcdef" for character in weights_digest)
+    ):
+        raise ValueError("representation.weights_sha256 must be a lowercase SHA-256")
     if backend == "simclr":
         _positive_int(representation["projection_dim"], "representation.projection_dim")
     else:
@@ -149,13 +157,6 @@ def validate_protocol_config(config: dict[str, Any]) -> None:
             or any(character not in "0123456789abcdef" for character in revision)
         ):
             raise ValueError("representation.model_revision must be a lowercase Git commit SHA")
-        weights_digest = representation["weights_sha256"]
-        if (
-            not isinstance(weights_digest, str)
-            or len(weights_digest) != 64
-            or any(character not in "0123456789abcdef" for character in weights_digest)
-        ):
-            raise ValueError("representation.weights_sha256 must be a lowercase SHA-256")
         if _positive_int(representation["feature_dim"], "representation.feature_dim") != 384:
             raise ValueError("representation.feature_dim must equal 384 for dinov2-small")
         resize_size = _positive_int(representation["resize_size"], "representation.resize_size")

@@ -1,3 +1,4 @@
+# Frozen parsed-config SHA-256: 37d8dbc22da725d5c414cc56fad579287b8a63e73fc7ff69ac509dc51ce3a70e
 protocol:
   version: "2.0"
   deterministic: true

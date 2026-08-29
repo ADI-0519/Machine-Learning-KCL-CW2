@@ -125,8 +125,11 @@ Training is permitted only from a clean Git worktree. The command uses the
 fixed 100-epoch schedule, atomically writes the final-epoch checkpoint, refuses
 to overwrite an existing checkpoint by default, and records a sidecar manifest
 containing the code revision, training-config digest, and checkpoint SHA-256.
-After this one-time run, the digest must be copied into the protocol-v2 SimCLR
-configs and frozen before any pilot artifact is produced.
+The resulting checkpoint is frozen at SHA-256
+`05a6b66f8c5605f73f6592db57dd5b28c075ce3bbde8e48fcd0a977c0bb2a814` in
+both protocol-v2 SimCLR configs. The experiment loader verifies this digest and
+the manifest's code, training-config, seed, epoch, and checkpoint provenance
+before computing embeddings.
 
 Prepare the second frozen representation. This downloads an exact Git revision
 of `facebook/dinov2-small`, verifies the model file against the SHA-256 locked in
@@ -197,8 +200,8 @@ pooled into `X`. Use the bullet only when `claim_ready` is `true`.
 
 The locked source-config SHA-256 digests are:
 
-- pilot: `3d022f2231f681d9b2e509d56be0812e9baea9355f529e365df5f58e1e12448e`
-- SimCLR confirmation: `c4f786bf1e51e9f65e8a461185df7007474e96f885119bc65d038c868b70017f`
+- pilot: `c9a65de80f68ce02175a94ef65f8f1c0a8f56027f0df0eeae5243ecba5ba8305`
+- SimCLR confirmation: `5c0ec92e5bb01ef6c000ff397e11e5510c7d2bc22d8f4b348ddde9514e79d2e8`
 - DINOv2 confirmation: `37d8dbc22da725d5c414cc56fad579287b8a63e73fc7ff69ac509dc51ce3a70e`
 
 Any configuration edit changes its digest and constitutes a different

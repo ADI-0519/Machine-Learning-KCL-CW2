@@ -36,6 +36,7 @@ def _protocol_config(output_root: Path) -> dict:
         "representation": {
             "backend": "simclr",
             "checkpoint_path": "unused.pt",
+            "weights_sha256": "b" * 64,
             "projection_dim": 4,
             "batch_size": 8,
             "embedding_seed": 21,

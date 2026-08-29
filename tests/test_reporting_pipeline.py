@@ -42,6 +42,7 @@ def _protocol_config(root: Path, *, representation_backend: str = "simclr") -> d
         "representation": {
             "backend": "simclr",
             "checkpoint_path": "synthetic.pt",
+            "weights_sha256": "b" * 64,
             "projection_dim": 4,
             "batch_size": 8,
             "embedding_seed": 21,

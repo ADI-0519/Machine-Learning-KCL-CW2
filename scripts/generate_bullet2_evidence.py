@@ -22,7 +22,7 @@ BASELINE_METHOD = "tpcrp"
 CONFIRMATION_REPLICATES = 10
 CONFIRMATION_SEEDS = list(range(42, 52))
 PRIMARY_BUDGET = 10
-SIMCLR_CONFIG_SHA256 = "c4f786bf1e51e9f65e8a461185df7007474e96f885119bc65d038c868b70017f"
+SIMCLR_CONFIG_SHA256 = "5c0ec92e5bb01ef6c000ff397e11e5510c7d2bc22d8f4b348ddde9514e79d2e8"
 DINOV2_CONFIG_SHA256 = "37d8dbc22da725d5c414cc56fad579287b8a63e73fc7ff69ac509dc51ce3a70e"
 
 
@@ -89,8 +89,10 @@ def _root_evidence(
             f"expected {expected_backend!r} representation under {root}, "
             f"found {representation['backend']!r}"
         )
-    if expected_backend == "dinov2" and checkpoint_digest != representation["weights_sha256"]:
-        raise ValueError("DINOv2 artifact checkpoint digest disagrees with the locked config")
+    if checkpoint_digest != representation["weights_sha256"]:
+        raise ValueError(
+            f"{expected_backend} artifact checkpoint digest disagrees with the locked config"
+        )
     if config["data"]["name"] != "cifar10":
         raise ValueError("bullet-2 evidence is locked to CIFAR-10")
     comparison_config = config["experiment"]["primary_comparison"]

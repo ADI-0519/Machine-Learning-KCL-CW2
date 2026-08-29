@@ -1,3 +1,4 @@
+# Frozen parsed-config SHA-256: c9a65de80f68ce02175a94ef65f8f1c0a8f56027f0df0eeae5243ecba5ba8305
 protocol:
   version: "2.0"
   deterministic: true
@@ -16,6 +17,7 @@ data:
 representation:
   backend: "simclr"
   checkpoint_path: "./results/checkpoints/simclr_resnet18.pt"
+  weights_sha256: "05a6b66f8c5605f73f6592db57dd5b28c075ce3bbde8e48fcd0a977c0bb2a814"
   projection_dim: 128
   batch_size: 256
   embedding_seed: 21

@@ -17,7 +17,7 @@ from scripts.generate_cv_evidence import generate_cv_evidence
 from src.artifacts import atomic_write_json, config_digest
 from src.statistics import pair_method_rows
 
-PILOT_CONFIG_SHA256 = "3d022f2231f681d9b2e509d56be0812e9baea9355f529e365df5f58e1e12448e"
+PILOT_CONFIG_SHA256 = "c9a65de80f68ce02175a94ef65f8f1c0a8f56027f0df0eeae5243ecba5ba8305"
 PILOT_REPLICATE_SEEDS = [42, 43, 44, 45, 46]
 PRIMARY_BUDGET = 10
 

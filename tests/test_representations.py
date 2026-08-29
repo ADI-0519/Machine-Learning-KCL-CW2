@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -13,6 +14,7 @@ from PIL import Image
 from torch import nn
 
 import src.experiment as experiment
+from src.artifacts import config_digest, file_sha256
 from src.config import load_configurations, validate_protocol_config
 from src.models import SimCLRModel
 from src.representations import (
@@ -72,6 +74,14 @@ def test_protocol_config_accepts_exact_simclr_and_dinov2_schemas(tmp_path) -> No
 
     dinov2 = _dinov2_config(tmp_path / "model.safetensors", "a" * 64)
     validate_protocol_config(dinov2)
+
+
+def test_protocol_config_requires_pinned_simclr_weights() -> None:
+    config = load_configurations("configs/protocol_v2_pilot.yaml")
+    config["representation"].pop("weights_sha256")
+
+    with pytest.raises(ValueError, match="weights_sha256"):
+        validate_protocol_config(config)
 
 
 @pytest.mark.parametrize(
@@ -171,10 +181,38 @@ def test_dinov2_wrapper_returns_pooler_output() -> None:
 def test_load_simclr_checkpoint_round_trip(tmp_path) -> None:
     checkpoint_path = tmp_path / "simclr.pt"
     source = SimCLRModel(proj_dim=128)
-    torch.save({"model_state_dict": source.state_dict()}, checkpoint_path)
+    training_config = {"seed": 21, "data": {}, "simclr": {}}
+    training_digest = config_digest(training_config)
+    payload = {
+        "checkpoint_format_version": 2,
+        "epoch": 1,
+        "model_state_dict": source.state_dict(),
+        "final_training_loss": 1.25,
+        "training_config": training_config,
+        "training_config_sha256": training_digest,
+        "git_commit": "a" * 40,
+    }
+    torch.save(payload, checkpoint_path)
+    checkpoint_digest = file_sha256(checkpoint_path)
+    manifest = {
+        "manifest_version": 1,
+        "checkpoint_path": str(checkpoint_path.resolve()),
+        "checkpoint_sha256": checkpoint_digest,
+        "checkpoint_format_version": 2,
+        "git_commit": "a" * 40,
+        "training_config_sha256": training_digest,
+        "training_seed": 21,
+        "trained_epochs": 1,
+        "final_training_loss": 1.25,
+    }
+    checkpoint_path.with_suffix(".pt.manifest.json").write_text(
+        json.dumps(manifest),
+        encoding="utf-8",
+    )
     representation = {
         "backend": "simclr",
         "checkpoint_path": str(checkpoint_path),
+        "weights_sha256": checkpoint_digest,
         "projection_dim": 128,
         "batch_size": 8,
         "embedding_seed": 21,
@@ -186,6 +224,15 @@ def test_load_simclr_checkpoint_round_trip(tmp_path) -> None:
     loaded_state = loaded.state_dict()
     assert source_state.keys() == loaded_state.keys()
     assert all(torch.equal(source_state[key], loaded_state[key]) for key in source_state)
+
+    representation["weights_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="SimCLR checkpoint SHA-256 mismatch"):
+        load_representation_encoder(representation, torch.device("cpu"))
+
+    representation["weights_sha256"] = checkpoint_digest
+    checkpoint_path.with_suffix(".pt.manifest.json").unlink()
+    with pytest.raises(FileNotFoundError, match="SimCLR manifest"):
+        load_representation_encoder(representation, torch.device("cpu"))
 
 
 def test_load_dinov2_uses_local_pinned_weights_and_checks_digest(monkeypatch, tmp_path) -> None:

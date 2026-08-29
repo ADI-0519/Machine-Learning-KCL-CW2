@@ -117,7 +117,7 @@ def test_protocol_run_rejects_dirty_git_before_loading_data(monkeypatch, tmp_pat
         "collect_environment",
         lambda **_kwargs: {
             "git_dirty": True,
-            "checkpoint_sha256": "f" * 64,
+            "checkpoint_sha256": "b" * 64,
         },
     )
 
@@ -147,6 +147,7 @@ def test_two_round_run_is_nested_and_evaluates_twice(monkeypatch, tmp_path) -> N
         "representation": {
             "backend": "simclr",
             "checkpoint_path": "unused.pt",
+            "weights_sha256": "b" * 64,
             "projection_dim": 4,
             "batch_size": 8,
             "embedding_seed": 21,
@@ -263,7 +264,7 @@ def test_two_round_run_is_nested_and_evaluates_twice(monkeypatch, tmp_path) -> N
             "deterministic_algorithms": True,
             "cublas_workspace_config": None,
             "checkpoint_path": "unused.pt",
-            "checkpoint_sha256": "f" * 64,
+            "checkpoint_sha256": "b" * 64,
         },
     )
 
@@ -549,13 +550,13 @@ def test_protocol_v2_pilot_config_locks_initial_comparison() -> None:
                 "ccfl_candidate_only",
                 "ccfl_unweighted",
             ],
-            "3d022f2231f681d9b2e509d56be0812e9baea9355f529e365df5f58e1e12448e",
+            "c9a65de80f68ce02175a94ef65f8f1c0a8f56027f0df0eeae5243ecba5ba8305",
         ),
         (
             "configs/protocol_v2_confirmation.yaml",
             "simclr",
             ["tpcrp", "tpcrp_ccfl", "ccfl_candidate_only", "ccfl_unweighted"],
-            "c4f786bf1e51e9f65e8a461185df7007474e96f885119bc65d038c868b70017f",
+            "5c0ec92e5bb01ef6c000ff397e11e5510c7d2bc22d8f4b348ddde9514e79d2e8",
         ),
         (
             "configs/protocol_v2_dinov2.yaml",

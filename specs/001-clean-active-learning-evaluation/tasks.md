@@ -205,10 +205,10 @@ run JSON, and compare canonical outputs for equality.
   contrasts.
 - [x] **T054B** Make SimCLR checkpoint creation final-epoch, atomic,
   overwrite-safe, and accompanied by a code/config/checksum manifest.
-- [ ] **T054C** Train SimCLR once from a clean commit, insert its SHA-256 into
+- [x] **T054C** Train SimCLR once from a clean commit, insert its SHA-256 into
   both SimCLR protocol configs, enforce it in the loader, and re-freeze the
   pilot and confirmation config digests.
-- [ ] **T055** Freeze the Gate-B config digest and record it in
+- [x] **T055** Freeze the Gate-B config digest and record it in
   `configs/protocol_v2_pilot.yaml` documentation.
 - [ ] **T056** Run the five-seed CIFAR-10 frozen-embedding pilot for TypiClust and
   CCFL first; do not run the larger grid yet.

@@ -229,3 +229,34 @@ pilot artifacts before any evidence generator is run on real results.
 The remaining pre-pilot action is T054C: create the real SimCLR checkpoint,
 insert and enforce its SHA-256, then update the two affected frozen config
 digests before committing the final experiment definition.
+
+## 2026-08-29 — SimCLR checkpoint frozen for Phase 8
+
+- Trained the CIFAR-10 SimCLR encoder once for the fixed 100-epoch schedule
+  from clean commit `314e1472791afe753f4b11fcd745640fb59e4fbf`, using
+  representation seed 21.
+- Froze checkpoint SHA-256
+  `05a6b66f8c5605f73f6592db57dd5b28c075ce3bbde8e48fcd0a977c0bb2a814`
+  in both SimCLR protocol configurations.
+- Re-froze parsed pilot and confirmation config digests as
+  `c9a65de80f68ce02175a94ef65f8f1c0a8f56027f0df0eeae5243ecba5ba8305`
+  and `5c0ec92e5bb01ef6c000ff397e11e5510c7d2bc22d8f4b348ddde9514e79d2e8`,
+  respectively. The DINOv2 config digest remains unchanged.
+- Made SimCLR loading fail closed unless the configured checksum, sidecar
+  manifest, checkpoint payload, training configuration, training commit,
+  seed, and final epoch agree. Artifact and evidence validation also enforce
+  the configured checkpoint checksum.
+- Validated all 132 state tensors as finite and completed a CUDA forward pass.
+  On a deterministic 2,048-example CIFAR-10 train subset, embeddings were
+  finite and unit-normalized; feature dimensions had mean standard deviation
+  0.0363 and leave-self-out 1-nearest-neighbour label agreement was 78.9%.
+  These are representation-integrity diagnostics, not benchmark results or a
+  CCFL performance claim.
+- Verification: `208 passed` with 81% overall statement coverage; configured
+  and broad Ruff checks, Ruff formatting, compilation, dependency checks,
+  `git diff --check`, and dry-runs of the pilot, SimCLR confirmation, and
+  DINOv2 confirmation configurations passed.
+
+T054C and T055 are complete. No protocol-v2 selection/evaluation artifact has
+yet been produced, so no accuracy-improvement or CV performance claim is
+authorized. T056, the five-seed paired Gate-B pilot, is next.
